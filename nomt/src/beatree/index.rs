@@ -19,18 +19,18 @@ impl Index {
     ///
     /// This is either a branch whose separator is exactly equal to this key or the branch with the
     /// highest separator less than the key.
-    pub fn lookup(&self, key: Key) -> Option<(Key, Arc<BranchNode>)> {
+    pub fn lookup(&self, key: &Key) -> Option<(Key, Arc<BranchNode>)> {
         self.first_key_map
-            .get_prev(&key)
+            .get_prev(key)
             .map(|(sep, b)| (sep.clone(), b.clone()))
     }
 
     /// Get the first separator greater than the given key.
-    pub fn next_key(&self, key: Key) -> Option<Key> {
+    pub fn next_key(&self, key: &Key) -> Option<&Key> {
         self.first_key_map
             .range(RangeFromExclusive { start: key })
             .next()
-            .map(|(k, _)| *k)
+            .map(|(k, _)| k)
     }
 
     /// Remove the branch with the given separator key.
@@ -49,11 +49,11 @@ impl Index {
     }
 }
 
-struct RangeFromExclusive {
-    start: Key,
+struct RangeFromExclusive<'a> {
+    start: &'a Key,
 }
 
-impl RangeBounds<Key> for RangeFromExclusive {
+impl<'a> RangeBounds<Key> for RangeFromExclusive<'a> {
     fn start_bound(&self) -> Bound<&Key> {
         Bound::Excluded(&self.start)
     }

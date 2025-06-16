@@ -430,12 +430,14 @@ impl ReverseDeltaBuilder {
                     } else {
                         // The delta builder was not aware of this write. Initiate a fetch from the store
                         // and record the result as a prior.
-                        let _ = self.command_tx.send(DeltaBuilderCommand::Lookup(*path));
+                        let _ = self
+                            .command_tx
+                            .send(DeltaBuilderCommand::Lookup(path.clone()));
                     }
                 }
                 KeyReadWrite::ReadThenWrite(prior, _) => {
                     // The path was read and then written. We could just keep the prior value.
-                    final_priors.insert(*path, prior.clone());
+                    final_priors.insert(path.clone(), prior.clone());
                 }
             }
         }

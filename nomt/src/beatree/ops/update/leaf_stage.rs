@@ -28,7 +28,7 @@ use crate::task::{join_task, spawn_task};
 /// Tracker of all changes that happen to leaves during an update
 pub type LeavesTracker = super::NodesTracker<LeafNode>;
 
-fn indexed_leaf(bbn_index: &Index, key: Key) -> Option<(Key, Option<Key>, PageNumber)> {
+fn indexed_leaf(bbn_index: &Index, key: &Key) -> Option<(Key, Option<Key>, PageNumber)> {
     let Some((_, branch)) = bbn_index.lookup(key) else {
         return None;
     };
@@ -41,7 +41,7 @@ fn indexed_leaf(bbn_index: &Index, key: Key) -> Option<(Key, Option<Key>, PageNu
     let cutoff = if i + 1 < branch.n() as usize {
         Some(get_key(&branch, i + 1))
     } else {
-        bbn_index.next_key(key)
+        bbn_index.next_key(key).cloned()
     };
 
     Some((separator, cutoff, leaf_pn))
@@ -97,18 +97,18 @@ pub fn run(
     let page_pool = leaf_reader.page_pool().clone();
 
     let changeset = changeset
-        .iter()
+        .into_iter()
         .map(|(k, v)| match v {
-            ValueChange::Insert(v) => Ok((*k, Some((v.clone(), false)))),
+            ValueChange::Insert(v) => Ok((k, Some((v, false)))),
             ValueChange::InsertOverflow(large_value, value_hash) => {
                 let (pages, num_writes) =
                     overflow::chunk(&large_value, &leaf_writer, &page_pool, &io_handle)?;
                 overflow_io += num_writes;
 
                 let cell = overflow::encode_cell(large_value.len(), value_hash.clone(), &pages);
-                Ok((*k, Some((cell, true))))
+                Ok((k, Some((cell, true))))
             }
-            ValueChange::Delete => Ok((*k, None)),
+            ValueChange::Delete => Ok((k, None)),
         })
         .collect::<std::io::Result<Vec<_>>>()?;
 
@@ -138,7 +138,7 @@ pub fn run(
                 io_handle.make_new_sibiling_handle(),
                 changeset[worker_params.op_range.clone()]
                     .iter()
-                    .map(|(k, _)| *k),
+                    .map(|(k, _)| k),
             )?;
 
             let mut prepared_leaves_iter = prepared_leaves.into_iter().peekable();
@@ -176,7 +176,7 @@ pub fn run(
         apply_worker_changes(&leaf_reader, &mut output, worker_output);
     }
 
-    output.leaf_changeset.sort_by_key(|(k, _)| *k);
+    output.leaf_changeset.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
     enforce_first_leaf_separator(&mut output.leaf_changeset, bbn_index);
     Ok(output)
 }
@@ -200,7 +200,7 @@ fn apply_worker_changes(
             output.freed_pages.push(prev_pn);
         }
 
-        output.leaf_changeset.push((*key, new_pn));
+        output.leaf_changeset.push((key.clone(), new_pn));
     }
 
     output.submitted_io += worker_output.leaves_tracker.extra_freed.len();
@@ -223,9 +223,14 @@ fn apply_worker_changes(
 //
 // NOTE: leaf_changeset is expected to be in order by separators.
 pub fn enforce_first_leaf_separator(
-    leaf_changeset: &mut Vec<([u8; 32], Option<PageNumber>)>,
+    leaf_changeset: &mut Vec<(Key, Option<PageNumber>)>,
     bbn_index: &Index,
 ) {
+    // TODO: remove once var len keys are actually used
+    for (key, _) in leaf_changeset.iter().by_ref() {
+        assert_eq!(key.len(), 32);
+    }
+
     // Check if the first changed leaf corresponds to the deletion of the first leaf.
     match leaf_changeset.first() {
         Some((first_key, None)) if *first_key == [0; 32] => (),
@@ -239,8 +244,8 @@ pub fn enforce_first_leaf_separator(
     // Initially set `maybe_new_first` to be the second leaf in the previous state.
     // It is an option because there may have been only one leaf in the previous state.
     // `maybe_new_first` always refers to leaves that were present previously.
-    let mut separator = [0; 32];
-    let mut maybe_new_first: Option<([u8; 32], PageNumber)>;
+    let mut separator = vec![];
+    let mut maybe_new_first: Option<(Key, PageNumber)>;
 
     // Iterate over `leaf_changeset` until a non deleted item with a separator
     // smaller than `maybe_new_first` is found. Meanwhile, if we find `maybe_new_first`
@@ -248,12 +253,13 @@ pub fn enforce_first_leaf_separator(
     let mut idx = 1;
     loop {
         // `separator` is being eliminated, so it must exist in the previous state
-        maybe_new_first = indexed_leaf(bbn_index, separator)
+        // TODO: to_vec needs to be updated
+        maybe_new_first = indexed_leaf(bbn_index, &separator)
             .map(|(_, maybe_next_separator, _)| maybe_next_separator)
             .flatten()
             .map(|next_separator| {
                 // UNWRAP: the leaf_pn of a just indexed leaf. It must exist.
-                indexed_leaf(bbn_index, next_separator)
+                indexed_leaf(bbn_index, &next_separator)
                     .map(|(s, _, leaf_pn)| {
                         // `next_separator` and `s` are the same
                         separator = next_separator;
@@ -268,7 +274,11 @@ pub fn enforce_first_leaf_separator(
 
         match &leaf_changeset[idx] {
             // The previous leaf, candidate to be the new first one has been eliminated.
-            (separator, None) if maybe_new_first.map_or(false, |(s, _)| s == *separator) => {
+            (separator, None)
+                if maybe_new_first
+                    .as_ref()
+                    .map_or(false, |(s, _)| s == separator) =>
+            {
                 idx += 1;
             }
             // The candidate will be the new first leaf or a new leaf with a smaller
@@ -277,14 +287,20 @@ pub fn enforce_first_leaf_separator(
         }
     }
 
-    if let Some((separator, Some(_))) = leaf_changeset.get(idx).copied() {
+    if let Some((separator, Some(_))) = leaf_changeset.get(idx).cloned() {
         // New leaf with a separator smaller or equal to the candidate.
-        if maybe_new_first.map_or(true, |(s, _)| s >= separator) {
+        if maybe_new_first
+            .as_ref()
+            .map_or(true, |(s, _)| s >= &separator)
+        {
             leaf_changeset[0].1 = leaf_changeset[idx].1;
             // If the new leaf corresponds to an update of the candidate,
             // remove the older separator.
             // Otherwise just remove the new first leaf entry.
-            if maybe_new_first.map_or(false, |(s, _)| s == separator) {
+            if maybe_new_first
+                .as_ref()
+                .map_or(false, |(s, _)| s == &separator)
+            {
                 leaf_changeset[idx].1 = None;
             } else {
                 leaf_changeset.remove(idx);
@@ -343,7 +359,7 @@ fn prepare_workers(
         // UNWRAP: first worker is pushed at the beginning of the range.
         let prev_worker = workers.last_mut().unwrap();
 
-        match indexed_leaf(bbn_index, changeset_remaining[pivot_idx].0) {
+        match indexed_leaf(bbn_index, &changeset_remaining[pivot_idx].0) {
             None => break,
             Some((_, None, _)) => break,
             Some((separator, Some(_), _)) => {
@@ -367,7 +383,7 @@ fn prepare_workers(
                     (changeset.len() - changeset_remaining.len()) + prev_worker_ops;
 
                 // previous worker now owns all nodes up to this one.
-                prev_worker.range.high = Some(separator);
+                prev_worker.range.high = Some(separator.clone());
                 prev_worker.right_neighbor = Some(RightNeighbor { tx });
                 prev_worker.op_range.end = op_partition_index;
 
@@ -400,7 +416,7 @@ fn reset_leaf_base(
     leaf_updater: &mut LeafUpdater,
     has_extended_range: bool,
     prepared_leaves: &mut PreparedLeafIter,
-    mut key: Key,
+    key: &Key,
 ) {
     if !has_extended_range {
         reset_leaf_base_fresh(
@@ -426,11 +442,10 @@ fn reset_leaf_base(
         if let Some(separator) = leaves_tracker
             .inner
             .last_key_value()
-            .and_then(|(_, entry)| entry.next_separator)
+            .and_then(|(_, entry)| entry.next_separator.clone())
         {
-            if separator > key {
-                key = separator;
-            }
+            let k = if &separator > key { &separator } else { key };
+
             reset_leaf_base_fresh(
                 bbn_index,
                 leaf_cache,
@@ -438,7 +453,7 @@ fn reset_leaf_base(
                 leaves_tracker,
                 leaf_updater,
                 prepared_leaves,
-                key,
+                k,
             )
         } else {
             // special case: all rightward workers deleted every last one of their nodes after the last one
@@ -456,12 +471,12 @@ fn reset_leaf_base_fresh(
     leaves_tracker: &mut LeavesTracker,
     leaf_updater: &mut LeafUpdater,
     prepared_leaves: &mut PreparedLeafIter,
-    key: Key,
+    key: &Key,
 ) {
     // fast path: this leaf was expected to be used and prepared. avoid heavy index lookup.
     if prepared_leaves
         .peek()
-        .map_or(false, |prepared| prepared.separator <= key)
+        .map_or(false, |prepared| &prepared.separator <= key)
     {
         // UNWRAP: we just checked.
         // note that the separator < key condition above only fails if we need to merge with an
@@ -471,9 +486,9 @@ fn reset_leaf_base_fresh(
         // we intend to work on this leaf, therefore, we delete it.
         // any new leaves produced by the updater will replace it.
         leaves_tracker.delete(
-            prepared_leaf.separator,
+            prepared_leaf.separator.clone(),
             prepared_leaf.page_number,
-            prepared_leaf.cutoff,
+            prepared_leaf.cutoff.clone(),
         );
 
         // UNWRAP: prepared leaves always have a `Some` node.
@@ -483,13 +498,13 @@ fn reset_leaf_base_fresh(
     }
 
     // slow path: unexpected leaf.
-    let Some((separator, cutoff, leaf_pn)) = indexed_leaf(bbn_index, key) else {
+    let Some((separator, cutoff, leaf_pn)) = indexed_leaf(bbn_index, &key) else {
         return;
     };
 
     // we intend to work on this leaf, therefore, we delete it.
     // any new leaves produced by the updater will replace it.
-    leaves_tracker.delete(separator, leaf_pn, cutoff);
+    leaves_tracker.delete(separator.clone(), leaf_pn, cutoff.clone());
 
     let base = BaseLeaf::new(
         leaf_cache.get(leaf_pn).unwrap_or_else(|| {
@@ -539,7 +554,7 @@ fn run_worker(
         &mut leaf_updater,
         has_extended_range,
         prepared_leaves,
-        changeset[worker_params.op_range.start].0,
+        &changeset[worker_params.op_range.start].0,
     );
 
     for (key, op) in &changeset[worker_params.op_range.clone()] {
@@ -555,7 +570,7 @@ fn run_worker(
                 // If we are dealing with a NeedsMerge, there is a high probability that the leaf updater
                 // has a new pending leaf which still needs to be constructed with a separator smaller
                 // than the last entry in the `leaves_tracker`.
-                cutoff
+                Some(cutoff)
             } else {
                 // If the `leaf_updater` has finished the last digest, we are safe to try to respond.
                 try_answer_left_neighbor(
@@ -564,11 +579,16 @@ fn run_worker(
                     &mut new_leaf_state.leaves_tracker,
                     has_finished_workload,
                 );
-                *key
+                None
             };
 
             has_extended_range = false;
-            if worker_params.range.high.map_or(false, |high| k >= high) {
+            if worker_params
+                .range
+                .high
+                .as_ref()
+                .map_or(false, |high| k.as_ref().unwrap_or(key) >= high)
+            {
                 has_extended_range = true;
                 super::extend_range_protocol::request_range_extension(
                     &mut worker_params,
@@ -584,7 +604,7 @@ fn run_worker(
                 &mut leaf_updater,
                 has_extended_range,
                 prepared_leaves,
-                k,
+                k.as_ref().unwrap_or(key),
             );
         }
 
@@ -594,7 +614,9 @@ fn run_worker(
         };
 
         let delete_overflow = |overflow_cell: &[u8]| overflow_deleted.push(overflow_cell.to_vec());
-        leaf_updater.ingest(*key, value_change, overflow, delete_overflow);
+        // TODO: can this clone be avoided by std::mem::take(key)?
+        // Is this thread the only owner of this portion of the changeset?
+        leaf_updater.ingest(key.clone(), value_change, overflow, delete_overflow);
     }
 
     while let LeafDigestResult::NeedsMerge(cutoff) = leaf_updater.digest(&mut new_leaf_state)? {
@@ -602,7 +624,8 @@ fn run_worker(
         if worker_params
             .range
             .high
-            .map_or(false, |high| cutoff >= high)
+            .as_ref()
+            .map_or(false, |high| &cutoff >= high)
         {
             has_extended_range = true;
             request_range_extension(&mut worker_params, &mut new_leaf_state.leaves_tracker);
@@ -616,7 +639,7 @@ fn run_worker(
             &mut leaf_updater,
             has_extended_range,
             prepared_leaves,
-            cutoff,
+            &cutoff,
         );
     }
 
@@ -695,23 +718,23 @@ struct PreparedLeaf {
     page_number: PageNumber,
 }
 
-fn preload_and_prepare(
+fn preload_and_prepare<'a>(
     leaf_cache: &LeafCache,
     leaf_reader: &StoreReader,
     bbn_index: &Index,
     io_handle: IoHandle,
-    changeset: impl IntoIterator<Item = Key>,
+    changeset: impl IntoIterator<Item = &'a Key>,
 ) -> std::io::Result<Vec<PreparedLeaf>> {
     let mut changeset_leaves: Vec<PreparedLeaf> = Vec::new();
     let mut submissions = 0;
     for key in changeset {
         if let Some(ref last) = changeset_leaves.last() {
-            if last.cutoff.map_or(true, |c| key < c) {
+            if last.cutoff.as_ref().map_or(true, |c| key < c) {
                 continue;
             }
         }
 
-        match indexed_leaf(bbn_index, key) {
+        match indexed_leaf(bbn_index, &key) {
             None => {
                 // this case only occurs when the DB is empty.
                 assert!(changeset_leaves.is_empty());

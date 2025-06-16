@@ -7,6 +7,7 @@ use crate::beatree::{
 pub fn separate(a: &Key, b: &Key) -> Key {
     //if b > a at some point b must have a 1 where a has a 0 and they are equal up to that point.
     let bit_len = prefix_len(a, b) + 1;
+    // TODO: bit_len will be longer than 32 bytes
     let mut separator = [0u8; 32];
 
     let full_bytes = bit_len / 8;
@@ -18,11 +19,13 @@ pub fn separate(a: &Key, b: &Key) -> Key {
         separator[full_bytes] = b[full_bytes] & mask;
     }
 
-    separator
+    separator.to_vec()
 }
 
 pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
     let mut bit_len = 0;
+    // TODO: this probably will need to be updated to something like
+    // min(key_a.min(), key_b.min())
     'byte_loop: for byte in 0..32 {
         for bit in 0..8 {
             let mask = 1 << (7 - bit);
@@ -35,6 +38,7 @@ pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
     bit_len
 }
 
+// TODO: keys wil be longer than 256 bits
 pub fn separator_len(key: &Key) -> usize {
     if key == &[0u8; 32] {
         return 1;
@@ -56,6 +60,7 @@ pub fn separator_len(key: &Key) -> usize {
 // Reconstruct a key starting from a prefix and a misaligned separator.
 // Note: bit offsets starts from 0 going to 7, and the most significant bit is the one with index 0
 pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators) -> Key {
+    // TODO: key will be longer than 32 bytes
     let mut key = [0u8; 32];
 
     let prefix_bit_len = maybe_prefix.as_ref().map(|p| p.1).unwrap_or(0);
@@ -93,7 +98,7 @@ pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators
         key[prefix_byte_len - 1] |= prefix.0[prefix_byte_len - 1] & mask;
     }
 
-    key
+    key.to_vec()
 }
 
 fn first_chunk_mask(bit_start: usize) -> u64 {

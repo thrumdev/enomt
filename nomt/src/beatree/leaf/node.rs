@@ -62,6 +62,7 @@ impl LeafNode {
         self.inner[0..2].copy_from_slice(&n.to_le_bytes());
     }
 
+    // TODO: should this return a reference?
     pub fn key(&self, i: usize) -> Key {
         extract_key(&self.cell_pointers()[i])
     }
@@ -150,7 +151,14 @@ impl LeafBuilder {
         let offset = PAGE_SIZE - self.remaining_value_size;
         let cell_pointer = &mut self.leaf.cell_pointers_mut()[self.index];
 
-        encode_cell_pointer(&mut cell_pointer[..], key, offset, overflow);
+        // TODO: update to support var key len
+        assert_eq!(key.len(), 256);
+        encode_cell_pointer(
+            &mut cell_pointer[..],
+            key.try_into().unwrap(),
+            offset,
+            overflow,
+        );
         self.leaf.inner[offset..][..value.len()].copy_from_slice(value);
 
         self.index += 1;
@@ -213,9 +221,10 @@ pub fn body_size(n: usize, value_size_sum: usize) -> usize {
 
 // get the key from the given cell pointer
 pub fn extract_key(cell_pointer: &[u8; 34]) -> Key {
+    // TODO: update to support var key len
     let mut buf = [0u8; 32];
     buf.copy_from_slice(&cell_pointer[..32]);
-    buf
+    buf.to_vec()
 }
 
 // get the cell offset and whether the cell is an overflow cell.

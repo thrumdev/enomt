@@ -26,13 +26,13 @@ pub use update::update;
 ///
 /// This determines the leaf store page number which might store the associated value, or `None`
 /// if the value is definitely non-existent.
-pub fn partial_lookup(key: Key, bbn_index: &Index) -> Option<PageNumber> {
+pub fn partial_lookup(key: &Key, bbn_index: &Index) -> Option<PageNumber> {
     let branch = match bbn_index.lookup(key) {
         None => return None,
         Some((_, branch)) => branch,
     };
 
-    search_branch(&branch, key.clone()).map(|(_, leaf_pn)| leaf_pn)
+    search_branch(&branch, key).map(|(_, leaf_pn)| leaf_pn)
 }
 
 /// Find the associated value associated with the key in the given leaf node, if any.
@@ -56,11 +56,11 @@ pub fn finish_lookup_blocking(
 ///
 /// If the value is an overflow, this function will create an asynchronous reader.
 pub fn finish_lookup_async(
-    key: Key,
+    key: &Key,
     leaf: &LeafNode,
     leaf_store: &StoreReader,
 ) -> Result<Option<Vec<u8>>, overflow::AsyncReader> {
-    leaf.get(&key)
+    leaf.get(key)
         .map(|(v, is_overflow)| {
             if is_overflow {
                 Err(overflow::AsyncReader::new(v, leaf_store.clone()))
@@ -78,7 +78,7 @@ pub fn lookup_blocking(
     leaf_cache: &LeafCache,
     leaf_store: &StoreReader,
 ) -> Result<Option<Vec<u8>>> {
-    let leaf_pn = match partial_lookup(key, bbn_index) {
+    let leaf_pn = match partial_lookup(&key, bbn_index) {
         None => return Ok(None),
         Some(pn) => pn,
     };
@@ -99,8 +99,8 @@ pub fn lookup_blocking(
 
 /// Binary search a branch node for the child node containing the key. This returns the last child
 /// node pointer whose separator is less than or equal to the given key.
-pub fn search_branch(branch: &BranchNode, key: Key) -> Option<(usize, PageNumber)> {
-    let (found, pos) = find_key_pos(branch, &key, None);
+pub fn search_branch(branch: &BranchNode, key: &Key) -> Option<(usize, PageNumber)> {
+    let (found, pos) = find_key_pos(branch, key, None);
 
     if found {
         return Some((pos, branch.node_pointer(pos).into()));

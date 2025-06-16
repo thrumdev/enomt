@@ -38,7 +38,7 @@ pub mod benches;
 #[cfg(feature = "fuzz")]
 pub use ops::bit_ops::*;
 
-pub type Key = [u8; 32];
+pub type Key = Vec<u8>;
 
 #[derive(Clone)]
 pub struct Tree {
@@ -567,12 +567,12 @@ impl ReadTransaction {
     /// user_data is as specified.
     pub fn lookup_async(
         &self,
-        key: Key,
+        key: &Key,
         io_handle: &IoHandle,
         user_data: u64,
     ) -> Result<Option<Vec<u8>>, AsyncLookup> {
         // First look up in the primary staging which contains the most recent changes.
-        if let Some(val) = self.inner.primary_staging.get(&key) {
+        if let Some(val) = self.inner.primary_staging.get(key) {
             return Ok(val.as_option().map(|v| v.to_vec()));
         }
 
@@ -581,12 +581,12 @@ impl ReadTransaction {
             .inner
             .secondary_staging
             .as_ref()
-            .and_then(|x| x.get(&key))
+            .and_then(|x| x.get(key))
         {
             return Ok(val.as_option().map(|v| v.to_vec()));
         }
 
-        let leaf_pn = match ops::partial_lookup(key, &self.inner.bbn_index) {
+        let leaf_pn = match ops::partial_lookup(&key, &self.inner.bbn_index) {
             None => return Ok(None),
             Some(pn) => pn,
         };
@@ -600,12 +600,12 @@ impl ReadTransaction {
                 // UNWRAP: first overflow request always succeeds.
                 let meta = overflow.submit(io_handle, user_data).unwrap();
                 Err(AsyncLookup {
-                    key,
+                    key: key.clone(),
                     state: AsyncLookupState::Overflow(overflow, Some(meta)),
                 })
             }
             Err(pending) => Err(AsyncLookup {
-                key,
+                key: key.clone(),
                 state: AsyncLookupState::Initial(pending),
             }),
         }
@@ -697,7 +697,7 @@ impl AsyncLookup {
             AsyncLookupState::Done => return None,
             AsyncLookupState::Initial(ref inner) => {
                 let leaf = inner.finish_inner(page);
-                match ops::finish_lookup_async(self.key, &leaf, &inner.read_tx.leaf_store) {
+                match ops::finish_lookup_async(&self.key, &leaf, &inner.read_tx.leaf_store) {
                     Ok(val) => {
                         self.state = AsyncLookupState::Done;
                         return Some(val);

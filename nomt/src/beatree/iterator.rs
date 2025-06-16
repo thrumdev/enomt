@@ -42,7 +42,12 @@ impl BeatreeIterator {
         end: Option<Key>,
     ) -> Self {
         BeatreeIterator {
-            memory_values: StagingIterator::new(primary_staging, secondary_staging, start, end),
+            memory_values: StagingIterator::new(
+                primary_staging,
+                secondary_staging,
+                start.clone(),
+                end.clone(),
+            ),
             leaf_values: LeafIterator::new(bbn_index, start, end),
         }
     }
@@ -113,14 +118,19 @@ impl BeatreeIterator {
             }
         };
 
+        // TODOs: `k.clone()` is related to `IterOutput`, which should contain a reference to the keys
         match action {
             Action::TakeLeaf => self.leaf_values.next(),
             Action::TakeMemory => match self.memory_values.next().unwrap() {
                 // PANIC: this case is checked previously.
                 (_, ValueChange::Delete) => panic!(),
-                (k, ValueChange::Insert(val)) => return Some(IterOutput::Item(*k, val)),
+                (k, ValueChange::Insert(val)) => return Some(IterOutput::Item(k.clone(), val)),
                 (k, ValueChange::InsertOverflow(ref overflow_cell, ref value_hash)) => {
-                    return Some(IterOutput::OverflowItem(*k, *value_hash, overflow_cell))
+                    return Some(IterOutput::OverflowItem(
+                        k.clone(),
+                        *value_hash,
+                        overflow_cell,
+                    ))
                 }
             },
         }
@@ -147,6 +157,7 @@ impl BeatreeIterator {
     }
 }
 
+// TODO: This may eventually contain something like &Key.
 /// The output of the iterator.
 pub enum IterOutput<'a> {
     // The iterator is blocked and needs a new leaf to be supplied.
@@ -205,11 +216,14 @@ impl LeafIterator {
             start: Some(start),
             end,
         };
-        let Some((_, branch)) = iter.index.lookup(start) else {
+        // UNWRAPs: `iter.start` has just been set to `Some`.
+        let Some((_, branch)) = iter.index.lookup(iter.start.as_ref().unwrap()) else {
             return iter;
         };
 
-        let Some((index_in_branch, _)) = super::ops::search_branch(&branch, start) else {
+        let Some((index_in_branch, _)) =
+            super::ops::search_branch(&branch, iter.start.as_ref().unwrap())
+        else {
             return iter;
         };
 
@@ -227,7 +241,9 @@ impl LeafIterator {
     fn peek_key(&mut self) -> Option<(Key, bool)> {
         match self.state {
             LeafIteratorState::Done { .. } => None,
-            LeafIteratorState::Blocked { ref separator, .. } => Some((*separator, true)),
+            // TODO: clones could be avoided here, a peek at an in-memory beatree leaf
+            // should be able to obtain a `&[u8]` from current.leaf.key(current.index)
+            LeafIteratorState::Blocked { ref separator, .. } => Some((separator.clone(), true)),
             LeafIteratorState::Proceeding { ref current, .. } => {
                 Some((current.leaf.key(current.index), false))
             }
@@ -307,10 +323,10 @@ impl LeafIterator {
             // out of range. look up next.
             let next_key = self
                 .index
-                .next_key(get_key(&*branch, next_index_in_branch - 1));
+                .next_key(&get_key(&*branch, next_index_in_branch - 1));
             match next_key {
                 None => LeafIteratorState::Done { last: Some(last) },
-                Some(k) if self.end.as_ref().map_or(false, |end| end <= &k) => {
+                Some(k) if self.end.as_ref().map_or(false, |end| end <= k) => {
                     LeafIteratorState::Done { last: Some(last) }
                 }
                 Some(k) => {
@@ -326,7 +342,7 @@ impl LeafIterator {
             }
         } else {
             let separator = get_key(&branch, next_index_in_branch);
-            if self.end.map_or(true, |end| separator < end) {
+            if self.end.as_ref().map_or(true, |end| &separator < end) {
                 LeafIteratorState::Blocked {
                     index_in_branch: next_index_in_branch,
                     separator,
@@ -401,7 +417,7 @@ impl LeafIterator {
         NeededLeavesIter {
             index: self.index.clone(),
             state: iter_state,
-            end: self.end,
+            end: self.end.clone(),
         }
     }
 }
@@ -431,7 +447,7 @@ impl Iterator for NeededLeavesIter {
             }
         } else {
             let last_separator = get_key(&branch, branch.n() as usize - 1);
-            let next_separator = match self.index.next_key(last_separator) {
+            let next_separator = match self.index.next_key(&last_separator) {
                 None => return None,
                 Some(k) => k,
             };
@@ -476,7 +492,7 @@ impl StagingIterator {
         end: Option<Key>,
     ) -> Self {
         StagingIterator {
-            primary: OrdMapOwnedIter::new(primary_staging, start, end),
+            primary: OrdMapOwnedIter::new(primary_staging, start.clone(), end.clone()),
             secondary: secondary_staging.map(|s| OrdMapOwnedIter::new(s, start, end)),
         }
     }

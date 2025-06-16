@@ -207,7 +207,7 @@ impl BranchOpsTracker {
         let mut gauge = BranchGauge::default();
 
         while pos < self.ops.len() && gauge.body_size() < target {
-            match *&self.ops[pos] {
+            match &self.ops[pos] {
                 BranchOp::Insert(key, _) => {
                     if gauge.body_size_after(key, separator_len(&key)) > BRANCH_NODE_BODY_SIZE {
                         // Rare case: body was artifically small due to long shared prefix.
@@ -229,9 +229,9 @@ impl BranchOpsTracker {
                 }
                 BranchOp::Update(update_pos, _) => {
                     // UNWRAP: `Update` op only exist when base is Some.
-                    let key = base.unwrap().key(update_pos);
+                    let key = base.unwrap().key(*update_pos);
 
-                    if gauge.body_size_after(key, separator_len(&key)) > BRANCH_NODE_BODY_SIZE {
+                    if gauge.body_size_after(&key, separator_len(&key)) > BRANCH_NODE_BODY_SIZE {
                         if gauge.body_size() < BRANCH_MERGE_THRESHOLD {
                             // Replace the Update op and repeat the loop
                             // to see if `stop_prefix_compression` is activated
@@ -337,20 +337,20 @@ impl BranchOpsTracker {
 
             let key = get_key(&base.node, i);
             let separator_len = separator_len(&key);
-            let body_size_after = gauge.body_size_after(key, separator_len);
+            let body_size_after = gauge.body_size_after(&key, separator_len);
 
             if body_size_after >= target {
                 // if an item jumps from below the target to bigger then the limit, do not use it
                 if body_size_after > limit {
                     left_chunk_n_items -= 1;
                 } else {
-                    gauge.ingest_key(key, separator_len);
+                    gauge.ingest_key(&key, separator_len);
                     left_chunk_sum_separator_lengths += separator_len;
                 }
                 break;
             }
             left_chunk_sum_separator_lengths += separator_len;
-            gauge.ingest_key(key, separator_len);
+            gauge.ingest_key(&key, separator_len);
         }
 
         // if none or all elements are taken then nothing needs to be changed
@@ -426,7 +426,7 @@ mod tests {
         while gauge.body_size() < BRANCH_BULK_SPLIT_THRESHOLD {
             let key = key(n_keys);
 
-            gauge.ingest_key(key, separator_len(&key));
+            gauge.ingest_key(&key, separator_len(&key));
             ops_tracker.push_insert(key, PageNumber(n_keys as u32));
 
             n_keys += 1;

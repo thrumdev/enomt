@@ -114,11 +114,11 @@ impl BranchNode {
     }
 
     // Set the prefix extracting `self.prefix_len` bits from the provided key
-    fn set_prefix(&mut self, key: &[u8; 32]) {
+    fn set_prefix(&mut self, key: &Vec<u8>) {
         let start = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
         let prefix_len = self.prefix_len() as usize;
         let end = start + ((prefix_len + 7) / 8).next_multiple_of(8);
-        bitwise_memcpy(&mut self.as_mut_slice()[start..end], 0, key, 0, prefix_len);
+        bitwise_memcpy(&mut self.as_mut_slice()[start..end], 0, &key, 0, prefix_len);
     }
 
     fn cells_mut(&mut self) -> &mut [[u8; 2]] {
@@ -408,6 +408,7 @@ pub fn compressed_separator_range_size(
 }
 
 // Extract the key at a given index from a BranchNode, taking into account prefix compression.
+// TODO: This may eventually become something like &Key
 pub fn get_key(node: &BranchNode, index: usize) -> Key {
     let prefix = if index < node.prefix_compressed() as usize {
         Some(node.raw_prefix())

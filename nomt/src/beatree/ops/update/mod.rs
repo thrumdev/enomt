@@ -162,14 +162,14 @@ impl<Node> NodesTracker<Node> {
         let entry = self.inner.entry(key).or_insert(ChangedNodeEntry {
             deleted: None,
             inserted: None,
-            next_separator,
+            next_separator: next_separator.clone(),
         });
 
         // we can only delete a node once.
         assert!(entry.deleted.is_none());
 
         entry.deleted.replace(pn);
-        entry.next_separator = next_separator;
+        entry.next_separator = next_separator.clone();
     }
 
     /// Add or modify a ChangedNodeEntry specifying an inserted Node.
@@ -183,7 +183,7 @@ impl<Node> NodesTracker<Node> {
         let entry = self.inner.entry(key).or_insert(ChangedNodeEntry {
             deleted: None,
             inserted: None,
-            next_separator,
+            next_separator: next_separator.clone(),
         });
 
         entry.next_separator = next_separator;

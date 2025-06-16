@@ -136,7 +136,7 @@ fn warm_up_phase<H: HashAlgorithm>(
 
     loop {
         if let Some(result) = seeker.take_completion() {
-            warm_ups.insert(result.key, result);
+            warm_ups.insert(result.key.clone(), result);
             continue;
         }
 
@@ -182,7 +182,7 @@ fn warm_up_phase<H: HashAlgorithm>(
 
     while !seeker.is_empty() {
         if let Some(result) = seeker.take_completion() {
-            warm_ups.insert(result.key, result);
+            warm_ups.insert(result.key.clone(), result);
             continue;
         }
         seeker.submit_all(&mut page_set);
@@ -294,12 +294,12 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
 
         let range_start = shared
             .read_write
-            .binary_search_by_key(&key_range_start, |x| x.0)
+            .binary_search_by_key(&&key_range_start, |x| &x.0)
             .unwrap_or_else(|i| i);
 
         let range_end = shared
             .read_write
-            .binary_search_by_key(&key_range_end, |x| x.0)
+            .binary_search_by_key(&&key_range_end, |x| &x.0)
             .unwrap_or_else(|i| i);
 
         RangeUpdater {
@@ -510,7 +510,8 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                         break;
                     }
                 } else {
-                    seeker.push(self.shared.read_write[next_push].0);
+                    // TODO: can this clone be removed? It could probably be replaced with std::mem::take
+                    seeker.push(self.shared.read_write[next_push].0.clone());
                     seeker.submit_all(page_set);
                 }
             }
