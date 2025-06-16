@@ -1,6 +1,9 @@
 //! Hashers (feature-gated) and utilities for implementing them.
 
-use crate::trie::{InternalData, LeafData, Node, NodeKind, TERMINATOR};
+use crate::trie::{InternalData, LeafData, LeafDataRef, Node, NodeKind, TERMINATOR};
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 /// A trie node hash function specialized for 64 bytes of data.
 ///
@@ -15,6 +18,10 @@ pub trait NodeHasher {
     /// Hash a leaf. This should domain-separate the hash
     /// according to the node kind.
     fn hash_leaf(data: &LeafData) -> [u8; 32];
+
+    /// Hash a leaf reference. This should domain-separate the hash
+    /// according to the node kind.
+    fn hash_leaf_ref(data: &LeafDataRef) -> [u8; 32];
 
     /// Hash an internal node. This should domain-separate
     /// the hash according to the node kind.
@@ -65,6 +72,14 @@ pub trait BinaryHash {
         buf[32..64].copy_from_slice(right);
         Self::hash(&buf)
     }
+
+    /// An optional specialization of `hash` where there are two inputs, left and right.
+    fn hash2_concat(left: &[u8], right: &[u8]) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(left.len() + right.len());
+        buf[0..left.len()].copy_from_slice(left);
+        buf[left.len()..right.len()].copy_from_slice(right);
+        Self::hash(&buf)
+    }
 }
 
 /// A node and value hasher constructed from a simple binary hasher.
@@ -86,7 +101,13 @@ impl<H: BinaryHash> ValueHasher for BinaryHasher<H> {
 
 impl<H: BinaryHash> NodeHasher for BinaryHasher<H> {
     fn hash_leaf(data: &LeafData) -> [u8; 32] {
-        let mut h = H::hash2_32_concat(&data.key_path, &data.value_hash);
+        let mut h = H::hash2_concat(&data.key_path, &data.value_hash);
+        set_msb(&mut h);
+        h
+    }
+
+    fn hash_leaf_ref(data: &LeafDataRef) -> [u8; 32] {
+        let mut h = H::hash2_concat(data.key_path, &data.value_hash);
         set_msb(&mut h);
         h
     }
@@ -129,6 +150,10 @@ pub mod blake3 {
         }
 
         fn hash2_32_concat(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+            Self::hash2_concat(left, right)
+        }
+
+        fn hash2_concat(left: &[u8], right: &[u8]) -> [u8; 32] {
             let mut hasher = blake3::Hasher::new();
             hasher.update(left);
             hasher.update(right);
@@ -160,6 +185,10 @@ pub mod sha2 {
         }
 
         fn hash2_32_concat(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+            Self::hash2_concat(left, right)
+        }
+
+        fn hash2_concat(left: &[u8], right: &[u8]) -> [u8; 32] {
             let mut hasher = Sha256::new();
             hasher.update(left);
             hasher.update(right);

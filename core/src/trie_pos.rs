@@ -6,6 +6,8 @@ use crate::{
 use alloc::fmt;
 use bitvec::prelude::*;
 
+// TODO: update `path` to become a Vec<u8> without depth limitations
+
 /// Encapsulates logic for moving around in paged storage for a binary trie.
 #[derive(Clone)]
 #[cfg_attr(
@@ -44,6 +46,11 @@ impl TriePosition {
     pub fn from_path_and_depth(path: KeyPath, depth: u16) -> Self {
         assert_ne!(depth, 0, "depth must be non-zero");
         assert!(depth <= 256);
+
+        // TODO: update to support var key len
+        assert_eq!(path.len(), 32);
+        let path = path.try_into().unwrap();
+
         let page_path = last_page_path(&path, depth);
         TriePosition {
             path,
@@ -56,9 +63,10 @@ impl TriePosition {
     pub fn from_bitslice(slice: &BitSlice<u8, Msb0>) -> Self {
         assert!(slice.len() <= 256);
 
+        // TODO: update to support var key len
         let mut path = [0; 32];
         path.view_bits_mut::<Msb0>()[..slice.len()].copy_from_bitslice(slice);
-        Self::from_path_and_depth(path, slice.len() as u16)
+        Self::from_path_and_depth(path.to_vec(), slice.len() as u16)
     }
 
     /// Parse a `TriePosition` from a bit string.
