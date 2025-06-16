@@ -11,6 +11,9 @@
 //! child index, then adding 1. This disambiguated representation uniquely encodes all the page IDs
 //! in a fixed-width bit pattern as, essentially, a base-64 integer.
 
+// TODO: remove the 256 bit key path length limit. The Path is already handled as an ArrayVec, so it should
+// be just a matter of removing everything related to the depth limit, for example, HIGHEST_ENCODED_42.
+
 use crate::{page::DEPTH, trie::KeyPath};
 use arrayvec::ArrayVec;
 use bitvec::prelude::*;
@@ -263,8 +266,10 @@ pub struct PageIdsIterator {
 impl PageIdsIterator {
     /// Create a PageIds Iterator over a KeyPath
     pub fn new(key_path: KeyPath) -> Self {
+        // TODO: update to support var key len, for now, it just expects 32-byte keys.
+        assert_eq!(key_path.len(), 32);
         Self {
-            key_path: Uint::from_be_bytes(key_path),
+            key_path: Uint::from_be_bytes::<32>(key_path.try_into().unwrap()),
             page_id: Some(ROOT_PAGE_ID),
         }
     }

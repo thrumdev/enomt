@@ -507,6 +507,7 @@ fn verify_range<H: NodeHasher>(
         &end_path.terminal.path()[start_depth..],
     );
 
+    // TODO: support var len keys
     let common_len = start_depth + common_bits;
     // TODO: if `common_len` == 256 the multi-proof is malformed. error
 
@@ -710,7 +711,7 @@ pub fn verify_update<H: NodeHasher>(
     let ops_len = ops.len();
 
     // chain with dummy item for handling the last batch.
-    for (i, (key, op)) in ops.into_iter().chain(Some(([0u8; 32], None))).enumerate() {
+    for (i, (key, op)) in ops.into_iter().chain(Some((vec![], None))).enumerate() {
         let is_last = i == ops_len;
 
         if is_last {
@@ -750,7 +751,7 @@ pub fn verify_update<H: NodeHasher>(
                     return Err(MultiVerifyUpdateError::OpsOutOfOrder);
                 }
             }
-            last_key = Some(key);
+            last_key = Some(key.clone());
 
             // find terminal index for the operation, erroring if out of scope.
             let mut next_terminal_index = last_terminal_index.unwrap_or(0);
