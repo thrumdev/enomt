@@ -15,6 +15,9 @@
 
 use crate::hasher::NodeHasher;
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 /// A node in the binary trie. In this schema, it is always 256 bits and is the hash of either
 /// an [`LeafData`] or [`InternalData`], or zeroed if it's a [`TERMINATOR`].
 ///
@@ -22,8 +25,8 @@ use crate::hasher::NodeHasher;
 /// nodes. Typically, this is done by setting the MSB.
 pub type Node = [u8; 32];
 
-/// The path to a key. All paths have a 256 bit fixed length.
-pub type KeyPath = [u8; 32];
+/// The path to a key.
+pub type KeyPath = Vec<u8>;
 
 /// The hash of a value. In this schema, it is always 256 bits.
 pub type ValueHash = [u8; 32];
@@ -90,6 +93,17 @@ pub struct LeafData {
     /// The actual location of this node may be anywhere along this path, depending on the other
     /// data within the trie.
     pub key_path: KeyPath,
+    /// The hash of the value carried in this leaf.
+    pub value_hash: ValueHash,
+}
+
+/// The data of a leaf node containg a reference to the KepyPath.
+pub struct LeafDataRef<'a> {
+    /// The total path to this value within the trie.
+    ///
+    /// The actual location of this node may be anywhere along this path, depending on the other
+    /// data within the trie.
+    pub key_path: &'a KeyPath,
     /// The hash of the value carried in this leaf.
     pub value_hash: ValueHash,
 }

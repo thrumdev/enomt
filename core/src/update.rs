@@ -1,7 +1,7 @@
 //! Trie update logic helpers.
 
 use crate::hasher::NodeHasher;
-use crate::trie::{self, KeyPath, LeafData, Node, ValueHash};
+use crate::trie::{self, KeyPath, LeafData, LeafDataRef, Node, ValueHash};
 
 use bitvec::prelude::*;
 
@@ -21,7 +21,7 @@ pub fn leaf_ops_spliced(
 ) -> impl Iterator<Item = (KeyPath, ValueHash)> + Clone + '_ {
     let splice_index = leaf
         .as_ref()
-        .and_then(|leaf| ops.binary_search_by_key(&leaf.key_path, |x| x.0).err());
+        .and_then(|leaf| ops.binary_search_by_key(&&leaf.key_path, |x| &x.0).err());
     let preserve_value = splice_index
         .zip(leaf)
         .map(|(_, leaf)| (leaf.key_path, Some(leaf.value_hash)));
@@ -41,7 +41,7 @@ pub enum WriteNode<'a> {
     Leaf {
         up: bool,
         down: &'a BitSlice<u8, Msb0>,
-        leaf_data: LeafData,
+        leaf_data: LeafDataRef<'a>,
         node: Node,
     },
     Internal {
@@ -134,7 +134,7 @@ pub fn build_trie<H: NodeHasher>(
     let mut b = leaf_ops.next();
     let mut c = leaf_ops.next();
 
-    match (b, c) {
+    match (&b, &c) {
         (None, _) => {
             // fast path: delete single node.
             visit(WriteNode::Terminator);
@@ -142,11 +142,11 @@ pub fn build_trie<H: NodeHasher>(
         }
         (Some((ref k, ref v)), None) => {
             // fast path: place single leaf.
-            let leaf_data = trie::LeafData {
-                key_path: *k,
+            let leaf_data = trie::LeafDataRef {
+                key_path: &k,
                 value_hash: *v,
             };
-            let leaf = H::hash_leaf(&leaf_data);
+            let leaf = H::hash_leaf_ref(&leaf_data);
             visit(WriteNode::Leaf {
                 up: false,
                 down: BitSlice::empty(),
@@ -169,11 +169,11 @@ pub fn build_trie<H: NodeHasher>(
         let n1 = a.as_ref().map(|(k, _)| common_after_prefix(k, &this_key));
         let n2 = c.as_ref().map(|(k, _)| common_after_prefix(k, &this_key));
 
-        let leaf_data = trie::LeafData {
-            key_path: this_key,
+        let leaf_data = trie::LeafDataRef {
+            key_path: &this_key,
             value_hash: this_val,
         };
-        let leaf = H::hash_leaf(&leaf_data);
+        let leaf = H::hash_leaf_ref(&leaf_data);
         let (leaf_depth, hash_up_layers) = match (n1, n2) {
             (None, None) => {
                 // single value - no hashing required.

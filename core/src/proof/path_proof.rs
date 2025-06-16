@@ -77,6 +77,7 @@ impl PathProof {
         key_path: &BitSlice<u8, Msb0>,
         root: Node,
     ) -> Result<VerifiedPathProof, PathProofVerificationError> {
+        // TODO: support var len keys
         if self.siblings.len() > core::cmp::min(key_path.len(), 256) {
             return Err(PathProofVerificationError::TooManySiblings);
         }
