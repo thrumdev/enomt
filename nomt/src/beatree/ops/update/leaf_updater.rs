@@ -126,7 +126,7 @@ impl LeafUpdater {
     }
 
     pub fn is_in_scope(&self, key: &Key) -> bool {
-        self.cutoff.map_or(true, |k| *key < k)
+        self.cutoff.as_ref().map_or(true, |k| key < k)
     }
 
     pub fn reset_base(&mut self, base: Option<BaseLeaf>, cutoff: Option<Key>) {
@@ -184,7 +184,7 @@ impl LeafUpdater {
             let node = self.build_leaf(&self.ops);
             let separator = self.separator();
 
-            new_leaves.handle_new_leaf(separator, node, self.cutoff)?;
+            new_leaves.handle_new_leaf(separator, node, self.cutoff.clone())?;
 
             self.ops.clear();
             self.gauge = LeafGauge::default();
@@ -195,13 +195,13 @@ impl LeafUpdater {
                 // UNWRAP: if cutoff exists, then base must too.
                 // Merge is only performed when not at the rightmost leaf. this is protected by the
                 // check on self.cutoff above.
-                self.separator_override = Some(self.base.as_ref().unwrap().separator);
+                self.separator_override = Some(self.base.as_ref().unwrap().separator.clone());
             }
 
             self.prepare_merge_ops();
 
             // UNWRAP: protected above.
-            Ok(DigestResult::NeedsMerge(self.cutoff.unwrap()))
+            Ok(DigestResult::NeedsMerge(self.cutoff.clone().unwrap()))
         }
     }
 
@@ -272,7 +272,10 @@ impl LeafUpdater {
             new_leaves.handle_new_leaf(
                 separator,
                 new_node,
-                self.separator_override.or(self.cutoff),
+                self.separator_override
+                    .as_ref()
+                    .or(self.cutoff.as_ref())
+                    .cloned(),
             )?;
             start += item_count;
         }
@@ -283,10 +286,12 @@ impl LeafUpdater {
 
     /// The separator of the next leaf that will be built.
     pub fn separator(&self) -> Key {
-        // the first leaf always gets a separator of all 0.
+        // the first leaf always gets an empty separator.
         self.separator_override
-            .or(self.base.as_ref().map(|b| b.separator))
-            .unwrap_or([0u8; 32])
+            .as_ref()
+            .or(self.base.as_ref().map(|b| &b.separator))
+            .cloned()
+            .unwrap_or(vec![])
     }
 
     // Starting from the specified index `from` within `self.ops`, consume and possibly
@@ -409,10 +414,11 @@ impl LeafUpdater {
         }
     }
 
+    // TODO: This may eventually return something like &Key if we can extract it from the BaseLeaf.
     fn op_first_key(&self, leaf_op: &LeafOp) -> Key {
         // UNWRAP: `KeepChunk` leaf ops only exist when base is `Some`.
         match leaf_op {
-            LeafOp::Insert(k, _, _) => *k,
+            LeafOp::Insert(k, _, _) => k.clone(),
             LeafOp::KeepChunk(from, _, _) => self.base.as_ref().unwrap().key(*from),
         }
     }
@@ -430,10 +436,11 @@ impl LeafUpdater {
 
         let mut leaf_builder = LeafBuilder::new(&self.page_pool, n_values, total_value_size);
 
-        for op in ops {
+        for op in ops.into_iter() {
             match op {
                 LeafOp::Insert(k, v, o) => {
-                    leaf_builder.push_cell(*k, v, *o);
+                    // TODO: To avoid this clone, `leaf_op` must be moved here and not passed by reference.
+                    leaf_builder.push_cell(k.clone(), v, *o);
                 }
                 LeafOp::KeepChunk(from, to, _) => {
                     // UNWRAP: if the operation is a KeepChunk variant, then base must exist

@@ -53,6 +53,7 @@ impl BaseBranch {
         }
     }
 
+    // TODO: This may eventually contain something like &Key.
     pub fn key(&self, i: usize) -> Key {
         get_key(&self.node, i)
     }
@@ -140,19 +141,19 @@ impl BranchUpdater {
 
             let node = build_branch(base, page_pool, &ops, &gauge);
             let separator = op_first_key(base, &ops[0]);
-            new_branches.handle_new_branch(separator, node, self.cutoff)?;
+            new_branches.handle_new_branch(separator, node, self.cutoff.clone())?;
 
             Ok(DigestResult::Finished)
         } else {
             self.ops_tracker.prepare_merge_ops(self.base.as_ref());
 
             // UNWRAP: protected above.
-            Ok(DigestResult::NeedsMerge(self.cutoff.unwrap()))
+            Ok(DigestResult::NeedsMerge(self.cutoff.clone().unwrap()))
         }
     }
 
     pub fn is_in_scope(&self, key: &Key) -> bool {
-        self.cutoff.map_or(true, |k| *key < k)
+        self.cutoff.as_ref().map_or(true, |k| key < k)
     }
 
     pub fn reset_base(&mut self, base: Option<BaseBranch>, cutoff: Option<Key>) {
@@ -214,7 +215,7 @@ impl BranchUpdater {
         {
             let node = build_branch(base, &self.page_pool, &ops, &gauge);
             let separator = op_first_key(base, &ops[0]);
-            new_branches.handle_new_branch(separator, node, self.cutoff)?;
+            new_branches.handle_new_branch(separator, node, self.cutoff.clone())?;
         }
         Ok(())
     }
@@ -223,7 +224,7 @@ impl BranchUpdater {
 fn op_first_key(base: Option<&BaseBranch>, branch_op: &BranchOp) -> Key {
     // UNWRAPs: `KeepChunk` and `Update` ops only exists when base is Some.
     match branch_op {
-        BranchOp::Insert(k, _) => *k,
+        BranchOp::Insert(k, _) => k.clone(),
         BranchOp::Update(pos, _) => base.unwrap().key(*pos),
         BranchOp::KeepChunk(chunk) => base.unwrap().key(chunk.start),
     }
@@ -248,7 +249,8 @@ fn build_branch(
         // SAFETY: If no base is avaialble, then all ops are expected to be `BranchOp::Insert`
         for op in ops {
             match op {
-                BranchOp::Insert(key, pn) => builder.push(*key, separator_len(key), pn.0),
+                // TODO: this clone could be replaced with a simple std::mem::take
+                BranchOp::Insert(key, pn) => builder.push(key.clone(), separator_len(key), pn.0),
                 _ => panic!("Unextected BranchOp creating a BranchNode without BaseBranch"),
             }
         }
@@ -289,7 +291,8 @@ fn build_branch(
 
         for pos in compressed_end..base_range.end {
             let (key, pn) = base.key_value(pos);
-            builder.push(key, separator_len(&key), pn.0);
+            let key_separator_len = separator_len(&key);
+            builder.push(key, key_separator_len, pn.0);
         }
     };
 
@@ -354,7 +357,9 @@ fn build_branch(
 
         match &ops[i] {
             BranchOp::Insert(key, pn) => {
-                builder.push(*key, separator_len(key), pn.0);
+                // TODO: this clone should be possible to be substituted with a simple std::mem::take
+                // builder.push(std::mem::take(key), separator_len(key), pn.0);
+                builder.push(key.clone(), separator_len(key), pn.0);
                 i += 1;
             }
             BranchOp::KeepChunk(chunk) => {
@@ -402,9 +407,9 @@ impl Default for BranchGauge {
 }
 
 impl BranchGauge {
-    pub fn ingest_key(&mut self, key: Key, len: usize) {
+    pub fn ingest_key(&mut self, key: &Key, len: usize) {
         let Some((ref first, _)) = self.first_separator else {
-            self.first_separator = Some((key, len));
+            self.first_separator = Some((key.clone(), len));
             self.prefix_len = len;
 
             self.n = 1;
@@ -412,7 +417,7 @@ impl BranchGauge {
         };
 
         if self.prefix_compressed.is_none() {
-            self.prefix_len = prefix_len(first, &key);
+            self.prefix_len = prefix_len(first, key);
         }
         self.sum_separator_lengths += len;
         self.n += 1;
@@ -423,13 +428,15 @@ impl BranchGauge {
         match op {
             BranchOp::Update(pos, _) => {
                 let key = get_key(&base.as_ref().unwrap().node, *pos);
-                self.ingest_key(key, separator_len(&key));
+                let separator_len_key = separator_len(&key);
+                self.ingest_key(&key, separator_len_key);
             }
             BranchOp::KeepChunk(ref chunk) => {
                 self.ingest_chunk(base.as_ref().unwrap(), chunk);
             }
             BranchOp::Insert(key, _) => {
-                self.ingest_key(*key, separator_len(key));
+                let separator_len_key = separator_len(&key);
+                self.ingest_key(key, separator_len_key);
             }
         }
     }
@@ -475,12 +482,12 @@ impl BranchGauge {
         }
     }
 
-    pub fn body_size_after(&mut self, key: Key, len: usize) -> usize {
+    pub fn body_size_after(&mut self, key: &Key, len: usize) -> usize {
         let p;
         let t;
         if let Some((ref first, first_len)) = self.first_separator {
             if self.prefix_compressed.is_none() {
-                p = prefix_len(first, &key);
+                p = prefix_len(first, key);
             } else {
                 p = self.prefix_len;
             }

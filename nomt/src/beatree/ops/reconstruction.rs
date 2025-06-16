@@ -60,7 +60,8 @@ pub fn reconstruct(
             separator[prefix.len()..prefix.len() + first.len()].copy_from_bitslice(first);
         }
 
-        if let Some(_) = index.insert(separator, Arc::new(branch)) {
+        // TODO: separtor will be already a vec
+        if let Some(_) = index.insert(separator.to_vec(), Arc::new(branch)) {
             bail!(
                 "2 branch nodes with same separator, separator={:?}",
                 separator

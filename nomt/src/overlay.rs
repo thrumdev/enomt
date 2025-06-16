@@ -203,7 +203,7 @@ impl Index {
     /// The sequence number is assumed to be greater than or equal to the maximum in the vector.
     fn insert_values(&mut self, seqn: u64, value_keys: impl IntoIterator<Item = KeyPath>) {
         for key in value_keys {
-            self.values_by_seqn.push_back((seqn, key));
+            self.values_by_seqn.push_back((seqn, key.clone()));
             self.values.insert(key, seqn);
         }
     }
@@ -345,6 +345,8 @@ impl LiveOverlay {
     }
 
     /// Iterate all value changes within the given key bounds.
+    // TODO: start and end KeyPaths require a lot of clones
+    // on the caller side. Can this be handled without owning the start and end?
     pub(super) fn value_iter<'a>(
         &'a self,
         start: KeyPath,
@@ -359,7 +361,7 @@ impl LiveOverlay {
                     .range(start..)
                     .take_while(move |(k, _)| end.as_ref().map_or(true, |end| end > k))
                     .filter_map(|(k, seqn)| seqn.checked_sub(self.min_seqn).map(|s| (k, s)))
-                    .map(|(k, seqn_diff)| (*k, self.value_inner(k, seqn_diff)))
+                    .map(|(k, seqn_diff)| (k.clone(), self.value_inner(k, seqn_diff)))
             })
             .into_iter()
             .flatten()

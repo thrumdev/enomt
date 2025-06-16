@@ -76,16 +76,16 @@ pub fn try_answer_left_neighbor<Node>(
     // of a changed item the key associated to the next item
     let mut found_unchanged_range = false;
     let mut new_high_range = None;
-    let mut separator = worker_params.range.low;
+    let mut separator = &worker_params.range.low;
 
     let mut take = nodes_tracker
         .inner
         .iter()
         .take_while(|(key, entry)| {
-            if let Some(low) = separator {
-                if low < **key {
+            if let Some(ref low) = separator {
+                if low < key {
                     found_unchanged_range = true;
-                    new_high_range = Some(**key);
+                    new_high_range = Some((**key).clone());
                     return false;
                 }
             }
@@ -96,7 +96,7 @@ pub fn try_answer_left_neighbor<Node>(
                 return false;
             }
 
-            separator = entry.next_separator.clone();
+            separator = &entry.next_separator;
 
             true
         })
@@ -111,14 +111,19 @@ pub fn try_answer_left_neighbor<Node>(
             // and they will be passed to the left worker
 
             if let Some(low) = separator {
-                if worker_params.range.high.map_or(true, |high| low < high) {
+                if worker_params
+                    .range
+                    .high
+                    .as_ref()
+                    .map_or(true, |high| low < high)
+                {
                     // special case where there is one unchanged range left,
                     // which is the last one, up to the worker.range.high
                     found_unchanged_range = true;
                 }
             }
 
-            new_high_range = worker_params.range.high;
+            new_high_range = worker_params.range.high.clone();
         } else {
             // Keep the request pending only if no inserted node has been found or any unchanged range,
             // and if the worker has not finished with the right worker
@@ -128,7 +133,7 @@ pub fn try_answer_left_neighbor<Node>(
     }
 
     // `self.low` and `left.high` are kept equal
-    worker_params.range.low = new_high_range;
+    worker_params.range.low = new_high_range.clone();
 
     if found_next_node {
         take += 1;
@@ -187,7 +192,12 @@ pub fn request_range_extension<Node>(
             // UNWRAP: the entry has just been checked to have an inserted node
             let (node, pn) = last_changed_entry.inserted.take().unwrap();
 
-            nodes_tracker.set_pending_base(*last_key, node, last_changed_entry.next_separator, pn);
+            nodes_tracker.set_pending_base(
+                last_key.clone(),
+                node,
+                last_changed_entry.next_separator.clone(),
+                pn,
+            );
         }
     }
 

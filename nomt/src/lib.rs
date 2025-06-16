@@ -378,7 +378,7 @@ impl<T: HashAlgorithm> Nomt<T> {
         // Convert the traceback into a series of write commands.
         let mut actuals = Vec::new();
         for (key, value) in traceback {
-            sess.warm_up(key);
+            sess.warm_up(key.clone());
             let value = KeyReadWrite::Write(value);
             actuals.push((key, value));
         }

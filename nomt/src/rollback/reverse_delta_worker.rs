@@ -25,7 +25,7 @@ pub(super) trait LoadValueAsync: Send + Sync + Sized + 'static {
     /// Start a load. This may complete eagerly or return a pending result.
     fn start_load(
         &self,
-        key_path: KeyPath,
+        key_path: &KeyPath,
         user_data: u64,
     ) -> Result<Option<Vec<u8>>, Self::Pending>;
 
@@ -119,7 +119,7 @@ impl<Store: LoadValueAsync> ReverseDeltaWorker<Store> {
     fn handle_lookup(&mut self, key_path: KeyPath) {
         // UNWRAP: `Load` commands never come after finish.
         let store = self.store.as_ref().unwrap();
-        match store.start_load(key_path, self.request_index) {
+        match store.start_load(&key_path, self.request_index) {
             Ok(val) => {
                 self.priors.insert(key_path, val);
             }
@@ -169,7 +169,7 @@ impl<Store: LoadValueAsync> ReverseDeltaWorker<Store> {
                 // If we get a value, insert it in priors and stop tracking the request.
                 if let Some(value) = pending.try_complete(completion, Some(overflow_meta)) {
                     self.dormant_request_count -= 1;
-                    self.priors.insert(*key_path, value);
+                    self.priors.insert(key_path.clone(), value);
                     self.requests.remove(&request_id);
                     None
                 } else {
@@ -345,10 +345,10 @@ impl LoadValueAsync for StoreLoadValueAsync {
 
     fn start_load(
         &self,
-        key_path: KeyPath,
+        key_path: &KeyPath,
         user_data: u64,
     ) -> Result<Option<Vec<u8>>, Self::Pending> {
-        if let Some(change) = self.overlay.value(&key_path) {
+        if let Some(change) = self.overlay.value(key_path) {
             return Ok(change.as_option().map(|v| v.to_vec()));
         }
 
