@@ -429,14 +429,14 @@ impl UpdateHandle {
                             });
 
                             witness.operations.reads.push(WitnessedRead {
-                                key: *k,
+                                key: k.clone(),
                                 value: value_hash,
                                 path_index: path_index + path_proof_offset,
                             });
                         }
                         if let Some(written) = v.written_value() {
                             witness.operations.writes.push(WitnessedWrite {
-                                key: *k,
+                                key: k.clone(),
                                 value: written,
                                 path_index: path_index + path_proof_offset,
                             });

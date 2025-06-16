@@ -175,7 +175,7 @@ fn prepare_workers(
         // UNWRAP: first worker is pushed at the beginning of the range.
         let prev_worker = workers.last_mut().unwrap();
 
-        let Some((_, branch)) = bbn_index.lookup(changeset_remaining[pivot_idx].0) else {
+        let Some((_, branch)) = bbn_index.lookup(&changeset_remaining[pivot_idx].0) else {
             // This could happen only on empty db, let one worker handle everything
             break;
         };
@@ -201,7 +201,7 @@ fn prepare_workers(
         let op_partition_index = (changeset.len() - changeset_remaining.len()) + prev_worker_ops;
 
         // previous worker now owns all nodes up to this one.
-        prev_worker.range.high = Some(separator);
+        prev_worker.range.high = Some(separator.clone());
         prev_worker.right_neighbor = Some(RightNeighbor { tx });
         prev_worker.op_range.end = op_partition_index;
 
@@ -229,10 +229,10 @@ fn reset_branch_base(
     branches_tracker: &mut BranchesTracker,
     branch_updater: &mut BranchUpdater,
     has_extended_range: bool,
-    mut key: Key,
+    key: &Key,
 ) {
     if !has_extended_range {
-        reset_branch_base_fresh(bbn_index, branches_tracker, branch_updater, key);
+        reset_branch_base_fresh(bbn_index, branches_tracker, branch_updater, &key);
         return;
     }
 
@@ -243,12 +243,11 @@ fn reset_branch_base(
         if let Some(separator) = branches_tracker
             .inner
             .last_key_value()
-            .and_then(|(_, entry)| entry.next_separator)
+            // TODO: can this clone be avoided?
+            .and_then(|(_, entry)| entry.next_separator.clone())
         {
-            if separator > key {
-                key = separator;
-            }
-            reset_branch_base_fresh(bbn_index, branches_tracker, branch_updater, key);
+            let k = if &separator > key { &separator } else { key };
+            reset_branch_base_fresh(bbn_index, branches_tracker, branch_updater, k);
         } else {
             // special case: all rightward workers deleted every last one of their nodes after the last one
             // we received from a range extension. We are now writing the new rightmost node, which
@@ -262,7 +261,7 @@ fn reset_branch_base_fresh(
     bbn_index: &Index,
     branches_tracker: &mut BranchesTracker,
     branch_updater: &mut BranchUpdater,
-    key: Key,
+    key: &Key,
 ) {
     let Some((separator, branch)) = bbn_index.lookup(key) else {
         return;
@@ -270,10 +269,10 @@ fn reset_branch_base_fresh(
 
     let cutoff = bbn_index.next_key(key);
 
-    branches_tracker.delete(separator, branch.bbn_pn().into(), cutoff);
+    branches_tracker.delete(separator, branch.bbn_pn().into(), cutoff.cloned());
 
     let base = BaseBranch::new(branch);
-    branch_updater.reset_base(Some(base), cutoff);
+    branch_updater.reset_base(Some(base), cutoff.cloned());
 }
 
 struct BranchWorkerOutput {
@@ -305,7 +304,7 @@ fn run_worker(
         &mut new_branch_state.branches_tracker,
         &mut branch_updater,
         has_extended_range,
-        changeset[worker_params.op_range.start].0,
+        &changeset[worker_params.op_range.start].0,
     );
 
     for (key, op) in &changeset[worker_params.op_range.clone()] {
@@ -321,7 +320,7 @@ fn run_worker(
                 // If we are dealing with a NeedsMerge, there is a high probability that the `branch_updater`
                 // has a new pending branch which still needs to be constructed with a separator smaller
                 // than the last entry in the `leaves_tracker`.
-                cutoff
+                Some(cutoff)
             } else {
                 // If the `branch_updater` has finished the last digest, we are safe to try to respond.
                 try_answer_left_neighbor(
@@ -331,11 +330,16 @@ fn run_worker(
                     has_finished_workload,
                 );
 
-                *key
+                None
             };
 
             has_extended_range = false;
-            if worker_params.range.high.map_or(false, |high| k >= high) {
+            if worker_params
+                .range
+                .high
+                .as_ref()
+                .map_or(false, |high| k.as_ref().unwrap_or(key) >= high)
+            {
                 has_extended_range = true;
                 request_range_extension(&mut worker_params, &mut new_branch_state.branches_tracker);
             }
@@ -345,11 +349,11 @@ fn run_worker(
                 &mut new_branch_state.branches_tracker,
                 &mut branch_updater,
                 has_extended_range,
-                k,
+                k.as_ref().unwrap_or(key),
             );
         }
 
-        branch_updater.ingest(*key, *op);
+        branch_updater.ingest(key.clone(), *op);
     }
 
     while let BranchDigestResult::NeedsMerge(cutoff) =
@@ -359,7 +363,8 @@ fn run_worker(
         if worker_params
             .range
             .high
-            .map_or(false, |high| cutoff >= high)
+            .as_ref()
+            .map_or(false, |high| &cutoff >= high)
         {
             has_extended_range = true;
             request_range_extension(&mut worker_params, &mut new_branch_state.branches_tracker);
@@ -370,7 +375,7 @@ fn run_worker(
             &mut new_branch_state.branches_tracker,
             &mut branch_updater,
             has_extended_range,
-            cutoff,
+            &cutoff,
         );
     }
 

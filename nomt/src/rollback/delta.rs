@@ -78,9 +78,11 @@ impl Delta {
         let to_erase_len = u32::from_le_bytes(buf);
         // Read the keys to erase.
         for _ in 0..to_erase_len {
+            // TODO: used keys are still [0; 32] but soon it will be updated
+            // the encoding format will change
             let mut key_path = [0; 32];
             reader.read_exact(&mut key_path)?;
-            let preemted = priors.insert(key_path, None).is_some();
+            let preemted = priors.insert(key_path.to_vec(), None).is_some();
             if preemted {
                 anyhow::bail!("duplicate key path (erase): {:?}", key_path);
             }
@@ -92,6 +94,8 @@ impl Delta {
         // Read the keys to reinstate along with their values.
         for _ in 0..to_reinsate_len {
             // Read the key path.
+            // TODO: used keys are still [0; 32] but soon it will be updated
+            // the encoding format will change
             let mut key_path = [0; 32];
             reader.read_exact(&mut key_path)?;
             // Read the value.
@@ -100,7 +104,7 @@ impl Delta {
             let value_len = u32::from_le_bytes(buf);
             value.resize(value_len as usize, 0);
             reader.read_exact(&mut value)?;
-            let preempted = priors.insert(key_path, Some(value)).is_some();
+            let preempted = priors.insert(key_path.to_vec(), Some(value)).is_some();
             if preempted {
                 anyhow::bail!("duplicate key path (reinstate): {:?}", key_path);
             }
