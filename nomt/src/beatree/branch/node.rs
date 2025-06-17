@@ -408,7 +408,6 @@ pub fn compressed_separator_range_size(
 }
 
 // Extract the key at a given index from a BranchNode, taking into account prefix compression.
-// TODO: This may eventually become something like &Key
 pub fn get_key(node: &BranchNode, index: usize) -> Key {
     let prefix = if index < node.prefix_compressed() as usize {
         Some(node.raw_prefix())

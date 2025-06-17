@@ -7,8 +7,8 @@ use crate::beatree::{
 pub fn separate(a: &Key, b: &Key) -> Key {
     //if b > a at some point b must have a 1 where a has a 0 and they are equal up to that point.
     let bit_len = prefix_len(a, b) + 1;
-    // TODO: bit_len will be longer than 32 bytes
-    let mut separator = [0u8; 32];
+    let byte_len = (bit_len + 7) / 8;
+    let mut separator = Vec::with_capacity(byte_len);
 
     let full_bytes = bit_len / 8;
     separator[..full_bytes].copy_from_slice(&b[..full_bytes]);
@@ -24,9 +24,8 @@ pub fn separate(a: &Key, b: &Key) -> Key {
 
 pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
     let mut bit_len = 0;
-    // TODO: this probably will need to be updated to something like
-    // min(key_a.min(), key_b.min())
-    'byte_loop: for byte in 0..32 {
+    let min_byte_len = std::cmp::min(key_a.len(), key_b.len());
+    'byte_loop: for byte in 0..min_byte_len {
         for bit in 0..8 {
             let mask = 1 << (7 - bit);
             if (key_a[byte] & mask) != (key_b[byte] & mask) {
@@ -38,13 +37,9 @@ pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
     bit_len
 }
 
-// TODO: keys wil be longer than 256 bits
 pub fn separator_len(key: &Key) -> usize {
-    if key == &[0u8; 32] {
-        return 1;
-    }
     let mut trailing_zeros = 0;
-    'byte_offset: for byte in (0..32).rev() {
+    'byte_offset: for byte in (0..key.len()).rev() {
         for bit in (0..8).rev() {
             let mask = 1 << (7 - bit);
             if (key[byte] & mask) == mask {
@@ -54,15 +49,12 @@ pub fn separator_len(key: &Key) -> usize {
         }
     }
 
-    256 - trailing_zeros
+    (key.len() * 8) - trailing_zeros
 }
 
 // Reconstruct a key starting from a prefix and a misaligned separator.
 // Note: bit offsets starts from 0 going to 7, and the most significant bit is the one with index 0
 pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators) -> Key {
-    // TODO: key will be longer than 32 bytes
-    let mut key = [0u8; 32];
-
     let prefix_bit_len = maybe_prefix.as_ref().map(|p| p.1).unwrap_or(0);
     let prefix_byte_len = (prefix_bit_len + 7) / 8;
     let prefix_end_bit_offset = prefix_bit_len % 8;
@@ -75,6 +67,9 @@ pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators
         // overlap between the end of the prefix and the beginning of the separator
         len => len - 1,
     };
+
+    let separator_byte_len = (separator_bit_len + 7) / 8;
+    let mut key = Vec::with_capacity(prefix_byte_len + separator_byte_len);
 
     // shift the separator and store it in the key
     bitwise_memcpy(
@@ -98,7 +93,7 @@ pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators
         key[prefix_byte_len - 1] |= prefix.0[prefix_byte_len - 1] & mask;
     }
 
-    key.to_vec()
+    key
 }
 
 fn first_chunk_mask(bit_start: usize) -> u64 {
