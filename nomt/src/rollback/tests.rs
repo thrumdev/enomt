@@ -85,14 +85,14 @@ impl LoadValueAsync for MockStoreAsync {
 
     fn start_load(
         &self,
-        key_path: KeyPath,
+        key_path: &KeyPath,
         user_data: u64,
     ) -> Result<Option<Vec<u8>>, Self::Pending> {
-        if self.inner.traps.contains(&key_path) {
+        if self.inner.traps.contains(key_path) {
             panic!("the caller requested a value that was trapped by the test");
         }
 
-        let res = match self.inner.values.get(&key_path) {
+        let res = match self.inner.values.get(key_path) {
             Some(value) => value.clone(),
             None => panic!("the caller requested a value that was not inserted by the test"),
         };
@@ -126,31 +126,31 @@ fn truncate_works() {
 
     let mut store = MockStore::new();
     store.insert(
-        hex!("0101010101010101010101010101010101010101010101010101010101010101"),
+        hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec(),
         Some(b"old_value1".to_vec()),
     );
     store.insert(
-        hex!("0202020202020202020202020202020202020202020202020202020202020202"),
+        hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec(),
         Some(b"old_value2".to_vec()),
     );
     store.insert(
-        hex!("0303030303030303030303030303030303030303030303030303030303030303"),
+        hex!("0303030303030303030303030303030303030303030303030303030303030303").to_vec(),
         Some(b"old_value3".to_vec()),
     );
 
     let rollback =
         Rollback::read(MAX_ROLLBACK_LOG_LEN, db_dir_path, Arc::new(db_dir_fd), 0, 0).unwrap();
     let builder = rollback.delta_builder_inner(store.async_reader());
-    builder.tentative_preserve_prior([1; 32]);
-    builder.tentative_preserve_prior([2; 32]);
-    builder.tentative_preserve_prior([3; 32]);
+    builder.tentative_preserve_prior(vec![1; 32]);
+    builder.tentative_preserve_prior(vec![2; 32]);
+    builder.tentative_preserve_prior(vec![3; 32]);
     let delta = builder.finalize(&[
         (
-            hex!("0101010101010101010101010101010101010101010101010101010101010101"),
+            hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec(),
             KeyReadWrite::Write(Some(b"new_value1".to_vec())),
         ),
         (
-            hex!("0202020202020202020202020202020202020202020202020202020202020202"),
+            hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec(),
             KeyReadWrite::Write(Some(b"new_value2".to_vec())),
         ),
     ]);
@@ -161,18 +161,14 @@ fn truncate_works() {
     assert_eq!(traceback.len(), 2);
     assert_eq!(
         traceback
-            .get(&hex!(
-                "0101010101010101010101010101010101010101010101010101010101010101"
-            ))
+            .get(&hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec())
             .unwrap()
             .clone(),
         Some(b"old_value1".to_vec())
     );
     assert_eq!(
         traceback
-            .get(&hex!(
-                "0202020202020202020202020202020202020202020202020202020202020202"
-            ))
+            .get(&hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec())
             .unwrap()
             .clone(),
         Some(b"old_value2".to_vec())
@@ -193,15 +189,15 @@ fn without_tentative_preserve_prior() {
 
     let mut store = MockStore::new();
     store.insert(
-        hex!("0101010101010101010101010101010101010101010101010101010101010101"),
+        hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec(),
         Some(b"old_value1".to_vec()),
     );
     store.insert(
-        hex!("0202020202020202020202020202020202020202020202020202020202020202"),
+        hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec(),
         Some(b"old_value2".to_vec()),
     );
     store.insert(
-        hex!("0303030303030303030303030303030303030303030303030303030303030303"),
+        hex!("0303030303030303030303030303030303030303030303030303030303030303").to_vec(),
         Some(b"old_value3".to_vec()),
     );
 
@@ -210,11 +206,11 @@ fn without_tentative_preserve_prior() {
     let builder = rollback.delta_builder_inner(store.async_reader());
     let delta = builder.finalize(&[
         (
-            hex!("0101010101010101010101010101010101010101010101010101010101010101"),
+            hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec(),
             KeyReadWrite::Write(Some(b"new_value1".to_vec())),
         ),
         (
-            hex!("0202020202020202020202020202020202020202020202020202020202020202"),
+            hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec(),
             KeyReadWrite::Write(Some(b"new_value2".to_vec())),
         ),
     ]);
@@ -225,18 +221,14 @@ fn without_tentative_preserve_prior() {
     assert_eq!(traceback.len(), 2);
     assert_eq!(
         traceback
-            .get(&hex!(
-                "0101010101010101010101010101010101010101010101010101010101010101"
-            ))
+            .get(&hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec())
             .unwrap()
             .clone(),
         Some(b"old_value1".to_vec())
     );
     assert_eq!(
         traceback
-            .get(&hex!(
-                "0202020202020202020202020202020202020202020202020202020202020202"
-            ))
+            .get(&hex!("0202020202020202020202020202020202020202020202020202020202020202").to_vec())
             .unwrap()
             .clone(),
         Some(b"old_value2".to_vec())
@@ -256,16 +248,16 @@ fn delta_builder_doesnt_load_read_then_write_priors() {
         .open(db_dir_path.clone())
         .unwrap();
 
-    let key_1 = hex!("0101010101010101010101010101010101010101010101010101010101010101");
+    let key_1 = hex!("0101010101010101010101010101010101010101010101010101010101010101").to_vec();
 
     let mut store = MockStore::new();
-    store.trap(key_1);
+    store.trap(key_1.clone());
 
     let rollback =
         Rollback::read(MAX_ROLLBACK_LOG_LEN, db_dir_path, Arc::new(db_dir_fd), 0, 0).unwrap();
     let builder = rollback.delta_builder_inner(store.async_reader());
     let delta = builder.finalize(&[(
-        key_1,
+        key_1.clone(),
         KeyReadWrite::ReadThenWrite(Some(b"prior_value".to_vec()), Some(b"new_value1".to_vec())),
     )]);
 

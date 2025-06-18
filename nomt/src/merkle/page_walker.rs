@@ -1000,7 +1000,7 @@ mod tests {
             let mut path = [0u8; 32];
             let slice = bits![u8, Msb0; $($t)+];
             path.view_bits_mut::<Msb0>()[..slice.len()].copy_from_bitslice(&slice);
-            path
+            path.to_vec()
         }}
     }
 
@@ -1222,7 +1222,7 @@ mod tests {
             &page_set,
             TriePosition::new(),
             vec![
-                (leaf_a_key_path, val(1)),
+                (leaf_a_key_path.clone(), val(1)),
                 (leaf_b_key_path, val(2)),
                 (leaf_c_key_path, val(3)),
                 (leaf_d_key_path, val(4)),
@@ -1373,11 +1373,11 @@ mod tests {
                 &page_set,
                 TriePosition::new(),
                 vec![
-                    (path_1, val(1)),
-                    (path_2, val(2)),
-                    (path_3, val(3)),
-                    (path_4, val(4)),
-                    (path_5, val(5)),
+                    (path_1.clone(), val(1)),
+                    (path_2.clone(), val(2)),
+                    (path_3.clone(), val(3)),
+                    (path_4.clone(), val(4)),
+                    (path_5.clone(), val(5)),
                 ],
             );
 
@@ -1400,10 +1400,10 @@ mod tests {
         };
 
         let expected_siblings = vec![
-            (node_hash(path_1, val(1)), 1),
-            (node_hash(path_2, val(2)), 2),
-            (node_hash(path_3, val(3)), 3),
-            (node_hash(path_4, val(4)), 4),
+            (node_hash(path_1.clone(), val(1)), 1),
+            (node_hash(path_2.clone(), val(2)), 2),
+            (node_hash(path_3.clone(), val(3)), 3),
+            (node_hash(path_4.clone(), val(4)), 4),
         ];
 
         // replace those leaf nodes one at a time.
@@ -1411,35 +1411,35 @@ mod tests {
 
         walker.advance_and_replace(
             &page_set,
-            TriePosition::from_path_and_depth(path_1, 4),
+            TriePosition::from_path_and_depth(path_1.clone(), 4),
             vec![(path_1, val(11))],
         );
         assert_eq!(walker.siblings(), &expected_siblings[..0]);
 
         walker.advance_and_replace(
             &page_set,
-            TriePosition::from_path_and_depth(path_2, 4),
+            TriePosition::from_path_and_depth(path_2.clone(), 4),
             vec![(path_2, val(12))],
         );
         assert_eq!(walker.siblings(), &expected_siblings[..1]);
 
         walker.advance_and_replace(
             &page_set,
-            TriePosition::from_path_and_depth(path_3, 4),
+            TriePosition::from_path_and_depth(path_3.clone(), 4),
             vec![(path_3, val(13))],
         );
         assert_eq!(walker.siblings(), &expected_siblings[..2]);
 
         walker.advance_and_replace(
             &page_set,
-            TriePosition::from_path_and_depth(path_4, 4),
+            TriePosition::from_path_and_depth(path_4.clone(), 4),
             vec![(path_4, val(14))],
         );
         assert_eq!(walker.siblings(), &expected_siblings[..3]);
 
         walker.advance_and_replace(
             &page_set,
-            TriePosition::from_path_and_depth(path_5, 4),
+            TriePosition::from_path_and_depth(path_5.clone(), 4),
             vec![(path_5, val(15))],
         );
         assert_eq!(walker.siblings(), &expected_siblings[..4]);
@@ -1530,7 +1530,7 @@ mod tests {
         let leaf_b_pos = trie_pos![0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1];
         let leaf_c_pos = trie_pos![0, 0, 1, 0, 0, 0, 0];
 
-        let mut page_id_iter = PageIdsIterator::new(leaf_a_key_path);
+        let mut page_id_iter = PageIdsIterator::new(leaf_a_key_path.clone());
         let root_page = page_id_iter.next().unwrap();
         let page_id_1 = page_id_iter.next().unwrap();
         let page_id_2 = page_id_iter.next().unwrap();
@@ -1612,7 +1612,7 @@ mod tests {
         let leaf_d_key_path = key_path![0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1];
         let cd_pos = trie_pos![0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1];
 
-        let mut page_id_iter = PageIdsIterator::new(leaf_c_key_path);
+        let mut page_id_iter = PageIdsIterator::new(leaf_c_key_path.clone());
         page_id_iter.next(); // root
         let page_id_1 = page_id_iter.next().unwrap();
         let page_id_2 = page_id_iter.next().unwrap();

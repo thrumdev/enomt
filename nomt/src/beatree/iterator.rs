@@ -614,7 +614,7 @@ mod tests {
         let n = values.len();
         let total_value_size = n * 8;
         let mut builder = LeafBuilder::new(&PAGE_POOL, n, total_value_size);
-        let separator = values[0].0;
+        let separator = values[0].0.clone();
         for (key, value) in values {
             builder.push_cell(key, &encode_value(value), false);
         }
@@ -642,7 +642,8 @@ mod tests {
         let branch = BranchNode::new_in(&PAGE_POOL);
         let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_len);
         for (key, pn) in leaves {
-            builder.push(key, bit_ops::separator_len(&key), pn.0);
+            let separator_len = bit_ops::separator_len(&key);
+            builder.push(key, separator_len, pn.0);
         }
 
         Arc::new(builder.finish())
@@ -658,8 +659,9 @@ mod tests {
         index
     }
 
+    // TODO: update this to use var len keys
     fn key(x: u16) -> Key {
-        let mut k = Key::default();
+        let mut k = vec![0; 32];
         k[0..2].copy_from_slice(&x.to_be_bytes());
         k
     }
@@ -696,7 +698,10 @@ mod tests {
             primary_staging,
             Some(secondary_staging),
             index,
-            Key::default(),
+            // TODO: Key::default() is not being used because right now the first
+            // key in the indes is [0;32] while vec![] will be used when the Index will
+            // be updated to use var len keys
+            vec![0; 32],
             None,
         );
         let mut collected = Vec::new();
@@ -715,6 +720,8 @@ mod tests {
 
     #[test]
     fn needed_leaves_is_accurate() {
+        let key = |x: u8| -> Key { vec![x; 32] };
+
         // split across 2 branches
         let branch_1 = build_branch(vec![(key(0), 69.into()), (key(4), 70.into())]);
         let branch_2 = build_branch(vec![(key(6), 420.into()), (key(8), 421.into())]);
@@ -726,7 +733,13 @@ mod tests {
             iter.needed_leaves().map(|pn| pn.0).collect::<Vec<_>>()
         };
 
-        assert_eq!(get_needed(Key::default(), None), vec![69, 70, 420, 421]);
+        // TODO: Key::default() is not being used because right now the first
+        // key in the indes is [0;32] while vec![0] will be used when the Index will
+        // be updated to use var len keys
+        assert_eq!(
+            get_needed(/* Key::default()  */ vec![0; 32], None),
+            vec![69, 70, 420, 421]
+        );
         assert_eq!(get_needed(key(2), Some(key(7))), vec![69, 70, 420]);
         assert_eq!(get_needed(key(4), Some(key(8))), vec![70, 420]);
     }
@@ -743,7 +756,8 @@ mod tests {
         {
             let start = key(2);
             let mut leaves = vec![leaf_1.clone(), leaf_2.clone()].into_iter();
-            let mut iter = BeatreeIterator::new(OrdMap::new(), None, index.clone(), start, None);
+            let mut iter =
+                BeatreeIterator::new(OrdMap::new(), None, index.clone(), start.clone(), None);
             while let Some(output) = iter.next() {
                 match output {
                     IterOutput::Blocked => iter.provide_leaf(LeafNodeRef {
@@ -769,8 +783,11 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                Key::default(),
-                Some(end),
+                // TODO: Key::default() is not being used because right now the first
+                // key in the indes is [0;32] while vec![0] will be used when the Index will
+                // be updated to use var len keys
+                vec![0; 32],
+                Some(end.clone()),
             );
             while let Some(output) = iter.next() {
                 match output {
@@ -792,8 +809,11 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                Key::default(),
-                Some(end),
+                // TODO: Key::default() is not being used because right now the first
+                // key in the indes is [0;32] while vec![0] will be used when the Index will
+                // be updated to use var len keys
+                vec![0; 32],
+                Some(end.clone()),
             );
             while let Some(output) = iter.next() {
                 match output {
@@ -822,8 +842,11 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                Key::default(),
-                Some(end),
+                // TODO: Key::default() is not being used because right now the first
+                // key in the indes is [0;32] while vec![0] will be used when the Index will
+                // be updated to use var len keys
+                vec![0; 32],
+                Some(end.clone()),
             );
             while let Some(output) = iter.next() {
                 match output {

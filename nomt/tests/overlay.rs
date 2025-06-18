@@ -2,7 +2,7 @@ mod common;
 
 use common::Test;
 
-fn expected_root(items: Vec<([u8; 32], Vec<u8>)>) -> nomt_core::trie::Node {
+fn expected_root(items: Vec<(Vec<u8>, Vec<u8>)>) -> nomt_core::trie::Node {
     nomt_core::update::build_trie::<nomt::hasher::Blake3Hasher>(
         0,
         items
@@ -19,57 +19,60 @@ fn overlay_multiple_forks() {
     let overlay_a = test.update().0;
     let overlay_b1 = {
         test.start_overlay_session([&overlay_a]);
-        test.write([1; 32], Some(vec![1, 2, 3]));
+        test.write(vec![1; 32], Some(vec![1, 2, 3]));
         test.update().0
     };
     let overlay_b2 = {
         test.start_overlay_session([&overlay_a]);
-        test.write([1; 32], Some(vec![4, 5, 6]));
+        test.write(vec![1; 32], Some(vec![4, 5, 6]));
         test.update().0
     };
 
     {
         test.start_overlay_session([&overlay_b1, &overlay_a]);
-        assert_eq!(test.read([1; 32]), Some(vec![1, 2, 3]));
+        assert_eq!(test.read(vec![1; 32]), Some(vec![1, 2, 3]));
     }
 
     {
         test.start_overlay_session([&overlay_b2, &overlay_a]);
-        assert_eq!(test.read([1; 32]), Some(vec![4, 5, 6]));
+        assert_eq!(test.read(vec![1; 32]), Some(vec![4, 5, 6]));
     }
 }
 
 #[test]
 fn overlay_root_calculation() {
     let mut test = Test::new("overlay_root_calculation");
-    test.write([1; 32], Some(vec![1, 2, 3]));
+    test.write(vec![1; 32], Some(vec![1, 2, 3]));
     let overlay_a = test.update().0;
 
     assert_eq!(
         overlay_a.root().into_inner(),
-        expected_root(vec![([1; 32], vec![1, 2, 3])]),
+        expected_root(vec![(vec![1; 32], vec![1, 2, 3])]),
     );
 
     test.start_overlay_session([&overlay_a]);
-    test.write([2; 32], Some(vec![4, 5, 6]));
+    test.write(vec![2; 32], Some(vec![4, 5, 6]));
     let overlay_b = test.update().0;
 
     assert_eq!(
         overlay_b.root().into_inner(),
-        expected_root(vec![([1; 32], vec![1, 2, 3]), ([2; 32], vec![4, 5, 6])]),
+        expected_root(vec![
+            (vec![1; 32], vec![1, 2, 3]),
+            (vec![2; 32], vec![4, 5, 6])
+        ]),
     );
 
     test.start_overlay_session([&overlay_b, &overlay_a]);
-    test.write([1; 32], Some(vec![7, 8, 9]));
-    test.write([3; 32], Some(vec![0, 1, 0]));
+    test.write(vec![1; 32], Some(vec![7, 8, 9]));
+    test.write(vec![3; 32], Some(vec![0, 1, 0]));
     let overlay_c = test.update().0;
 
     assert_eq!(
         overlay_c.root().into_inner(),
         expected_root(vec![
-            ([1; 32], vec![7, 8, 9]),
-            ([2; 32], vec![4, 5, 6]),
-            ([3; 32], vec![0, 1, 0])
+            (vec![1; 32], vec![7, 8, 9]),
+            (vec![2; 32], vec![4, 5, 6]),
+            (vec![3; 32], vec![0, 1, 0])
         ]),
     );
 }
@@ -116,9 +119,9 @@ fn overlay_commit_in_order_works() {
 fn overlay_changes_land_on_disk_when_committed() {
     {
         let mut test = Test::new("overlay_changes_land_on_disk");
-        test.write([1; 32], Some(vec![1, 2, 3]));
-        test.write([2; 32], Some(vec![4, 5, 6]));
-        test.write([3; 32], Some(vec![7, 8, 9]));
+        test.write(vec![1; 32], Some(vec![1, 2, 3]));
+        test.write(vec![2; 32], Some(vec![4, 5, 6]));
+        test.write(vec![3; 32], Some(vec![7, 8, 9]));
 
         let overlay = test.update().0;
         test.commit_overlay(overlay);
@@ -132,18 +135,18 @@ fn overlay_changes_land_on_disk_when_committed() {
         /* cleanup_dir */ false,
     );
 
-    assert_eq!(test.read([1; 32]), Some(vec![1, 2, 3]));
-    assert_eq!(test.read([2; 32]), Some(vec![4, 5, 6]));
-    assert_eq!(test.read([3; 32]), Some(vec![7, 8, 9]));
+    assert_eq!(test.read(vec![1; 32]), Some(vec![1, 2, 3]));
+    assert_eq!(test.read(vec![2; 32]), Some(vec![4, 5, 6]));
+    assert_eq!(test.read(vec![3; 32]), Some(vec![7, 8, 9]));
 }
 
 #[test]
 fn overlay_uncommitted_not_on_disk() {
     {
         let mut test = Test::new("overlay_uncommitted_not_on_disk");
-        test.write([1; 32], Some(vec![1, 2, 3]));
-        test.write([2; 32], Some(vec![4, 5, 6]));
-        test.write([3; 32], Some(vec![7, 8, 9]));
+        test.write(vec![1; 32], Some(vec![1, 2, 3]));
+        test.write(vec![2; 32], Some(vec![4, 5, 6]));
+        test.write(vec![3; 32], Some(vec![7, 8, 9]));
 
         let _overlay = test.update().0;
     }
@@ -156,7 +159,7 @@ fn overlay_uncommitted_not_on_disk() {
         /* cleanup_dir */ false,
     );
 
-    assert_eq!(test.read([1; 32]), None);
-    assert_eq!(test.read([2; 32]), None);
-    assert_eq!(test.read([3; 32]), None);
+    assert_eq!(test.read(vec![1; 32]), None);
+    assert_eq!(test.read(vec![2; 32]), None);
+    assert_eq!(test.read(vec![3; 32]), None);
 }

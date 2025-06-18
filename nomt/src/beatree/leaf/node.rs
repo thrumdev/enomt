@@ -152,7 +152,7 @@ impl LeafBuilder {
         let cell_pointer = &mut self.leaf.cell_pointers_mut()[self.index];
 
         // TODO: update to support var key len
-        assert_eq!(key.len(), 256);
+        assert_eq!(key.len(), 32);
         encode_cell_pointer(
             &mut cell_pointer[..],
             key.try_into().unwrap(),

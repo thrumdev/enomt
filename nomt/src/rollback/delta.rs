@@ -120,9 +120,9 @@ mod tests {
     #[test]
     fn delta_roundtrip() {
         let mut delta = Delta::empty();
-        delta.priors.insert([1; 32], Some(b"value1".to_vec()));
-        delta.priors.insert([2; 32], None);
-        delta.priors.insert([3; 32], Some(b"value3".to_vec()));
+        delta.priors.insert(vec![1; 32], Some(b"value1".to_vec()));
+        delta.priors.insert(vec![2; 32], None);
+        delta.priors.insert(vec![3; 32], Some(b"value3".to_vec()));
 
         let mut buf = delta.encode();
         let mut cursor = Cursor::new(&mut buf);

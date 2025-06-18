@@ -642,18 +642,18 @@ mod tests {
             BucketInfo::FreshOrDependent(SharedMaybeBucketIndex::new(None)),
         );
 
-        let key1 = [1; 32];
+        let key1 = vec![1; 32];
         let value1a = ValueChange::Insert(vec![1, 2, 3]);
         let value1b = ValueChange::Insert(vec![4, 5, 6]);
 
         let page_map = vec![(ROOT_PAGE_ID, page1a)].into_iter().collect();
-        let value_map = vec![(key1, value1a)].into_iter().collect();
+        let value_map = vec![(key1.clone(), value1a)].into_iter().collect();
         let a = LiveOverlay::new(None)
             .unwrap()
             .finish([0; 32], [1; 32], page_map, value_map, None);
 
         let page_map = vec![(ROOT_PAGE_ID, page1b)].into_iter().collect();
-        let value_map = vec![(key1, value1b)].into_iter().collect();
+        let value_map = vec![(key1.clone(), value1b)].into_iter().collect();
         let b = LiveOverlay::new(Some(&a))
             .unwrap()
             .finish([1; 32], [2; 32], page_map, value_map, None);
@@ -690,9 +690,9 @@ mod tests {
             BucketInfo::FreshOrDependent(SharedMaybeBucketIndex::new(None)),
         );
 
-        let key_1 = [1; 32];
-        let key_2 = [2; 32];
-        let key_3 = [3; 32];
+        let key_1 = vec![1; 32];
+        let key_2 = vec![2; 32];
+        let key_3 = vec![3; 32];
 
         let value_1 = ValueChange::Insert(vec![1, 2, 3]);
         let value_2 = ValueChange::Insert(vec![4, 5, 6]);
@@ -704,9 +704,9 @@ mod tests {
             (page_id_3.clone(), page_3),
         ];
         let values = [
-            (key_1, value_1.clone()),
-            (key_2, value_2.clone()),
-            (key_3, value_3.clone()),
+            (key_1.clone(), value_1.clone()),
+            (key_2.clone(), value_2.clone()),
+            (key_3.clone(), value_3.clone()),
         ];
 
         // build a chain of 3 overlays, each with one unique key and value.
@@ -806,10 +806,10 @@ mod tests {
             BucketInfo::FreshOrDependent(SharedMaybeBucketIndex::new(None)),
         );
 
-        let key_1 = [1; 32];
+        let key_1 = vec![1; 32];
         let val_1 = ValueChange::Insert(vec![1, 2, 3]);
 
-        let key_2 = [2; 32];
+        let key_2 = vec![2; 32];
         let val_2 = ValueChange::Insert(vec![4, 5, 6]);
         let val_2b = ValueChange::Insert(vec![7, 8, 9]);
 
@@ -819,15 +819,18 @@ mod tests {
         let page_map = vec![(page_id_1.clone(), page_1), (page_id_2.clone(), page_2)]
             .into_iter()
             .collect();
-        let value_map = vec![(key_1, val_1.clone()), (key_2, val_2.clone())]
-            .into_iter()
-            .collect();
+        let value_map = vec![
+            (key_1.clone(), val_1.clone()),
+            (key_2.clone(), val_2.clone()),
+        ]
+        .into_iter()
+        .collect();
         let a = LiveOverlay::new(None)
             .unwrap()
             .finish([0; 32], [1; 32], page_map, value_map, None);
 
         let page_map = vec![(page_id_2.clone(), page_2b)].into_iter().collect();
-        let value_map = vec![(key_2, val_2b.clone())].into_iter().collect();
+        let value_map = vec![(key_2.clone(), val_2b.clone())].into_iter().collect();
         let b = LiveOverlay::new([&a])
             .unwrap()
             .finish([0; 32], [1; 32], page_map, value_map, None);

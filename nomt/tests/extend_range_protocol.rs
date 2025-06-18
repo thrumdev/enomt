@@ -57,8 +57,8 @@ fn insert_delete_and_read(name: impl AsRef<Path>, to_delete: Vec<u8>) {
     }
 }
 
-fn key(id: u8) -> [u8; 32] {
-    let mut key = [0; 32];
+fn key(id: u8) -> Vec<u8> {
+    let mut key = vec![0; 32];
     key[0] = id;
     key
 }

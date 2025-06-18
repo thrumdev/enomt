@@ -342,7 +342,7 @@ impl Agent {
                 let session = session.clone();
                 move || {
                     for key in &reads[start..end] {
-                        let _res = session.read(*key).expect("read failed");
+                        let _res = session.read(key.to_vec()).expect("read failed");
                     }
                 }
             });
@@ -366,10 +366,10 @@ impl Agent {
         for change in changeset {
             match change {
                 KeyValueChange::Insert(key, value) => {
-                    actuals.push((key, nomt::KeyReadWrite::Write(Some(value))));
+                    actuals.push((key.to_vec(), nomt::KeyReadWrite::Write(Some(value))));
                 }
                 KeyValueChange::Delete(key) => {
-                    actuals.push((key, nomt::KeyReadWrite::Write(None)));
+                    actuals.push((key.to_vec(), nomt::KeyReadWrite::Write(None)));
                 }
             }
         }
@@ -408,7 +408,7 @@ impl Agent {
     fn query(&mut self, key: message::Key) -> Result<Option<message::Value>> {
         // UNWRAP: `nomt` is always `Some` except recreation.
         let nomt = self.nomt.as_ref().unwrap();
-        let value = nomt.read(key)?;
+        let value = nomt.read(key.to_vec())?;
         Ok(value)
     }
 

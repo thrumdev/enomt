@@ -922,13 +922,14 @@ mod tests {
 
     #[test]
     pub fn test_multiproof_creation_single_path_proof() {
-        let mut key_path = [0; 32];
+        let mut key_path = [0; 32].to_vec();
         key_path[0] = 0b10000000;
         let sibling1 = [1; 32];
         let sibling2 = [2; 32];
         let path_proof = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path, 256,
+                key_path.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling2],
         };
@@ -946,10 +947,10 @@ mod tests {
 
     #[test]
     pub fn test_multiproof_creation_two_path_proofs() {
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b00000000;
 
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b00111000;
 
         let sibling1 = [1; 32];
@@ -963,13 +964,15 @@ mod tests {
 
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_1, 256,
+                key_path_1.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling2, sibling_x, sibling3, sibling4],
         };
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_2, 256,
+                key_path_2.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling2, sibling_x, sibling5, sibling6],
         };
@@ -999,10 +1002,10 @@ mod tests {
 
     #[test]
     pub fn test_multiproof_creation_two_path_proofs_256_depth() {
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[31] = 0b00000000;
 
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[31] = 0b00000001;
 
         let mut siblings_1: Vec<[u8; 32]> = (0..255).map(|i| [i; 32]).collect();
@@ -1012,13 +1015,15 @@ mod tests {
 
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_1, 256,
+                key_path_1.clone(),
+                256,
             )),
             siblings: siblings_1.clone(),
         };
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_2, 256,
+                key_path_2.clone(),
+                256,
             )),
             siblings: siblings_2,
         };
@@ -1046,22 +1051,17 @@ mod tests {
 
     #[test]
     pub fn test_multiproof_creation_multiple_path_proofs() {
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b00000000;
-
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b01000000;
-
-        let mut key_path_3 = [0; 32];
+        let mut key_path_3 = [0; 32].to_vec();
         key_path_3[0] = 0b01001100;
-
-        let mut key_path_4 = [0; 32];
+        let mut key_path_4 = [0; 32].to_vec();
         key_path_4[0] = 0b11101100;
-
-        let mut key_path_5 = [0; 32];
+        let mut key_path_5 = [0; 32].to_vec();
         key_path_5[0] = 0b11110100;
-
-        let mut key_path_6 = [0; 32];
+        let mut key_path_6 = [0; 32].to_vec();
         key_path_6[0] = 0b11111000;
 
         let sibling1 = [1; 32];
@@ -1086,28 +1086,32 @@ mod tests {
 
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_1, 256,
+                key_path_1.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling2],
         };
 
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_2, 256,
+                key_path_2.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling3, sibling4, sibling5, sibling6, sibling7],
         };
 
         let path_proof_3 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_3, 256,
+                key_path_3.clone(),
+                256,
             )),
             siblings: vec![sibling1, sibling3, sibling4, sibling5, sibling8, sibling9],
         };
 
         let path_proof_4 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_4, 256,
+                key_path_4.clone(),
+                256,
             )),
             siblings: vec![
                 sibling10, sibling11, sibling12, sibling13, sibling14, sibling15,
@@ -1116,7 +1120,8 @@ mod tests {
 
         let path_proof_5 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_5, 256,
+                key_path_5.clone(),
+                256,
             )),
             siblings: vec![
                 sibling10, sibling11, sibling12, sibling16, sibling17, sibling18,
@@ -1125,7 +1130,8 @@ mod tests {
 
         let path_proof_6 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
-                key_path_6, 256,
+                key_path_6.clone(),
+                256,
             )),
             siblings: vec![sibling10, sibling11, sibling12, sibling16, sibling19],
         };
@@ -1185,22 +1191,17 @@ mod tests {
 
     #[test]
     pub fn test_multiproof_creation_ext_siblings_order() {
-        let mut key_path_0 = [0; 32];
+        let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00001000;
-
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b00010000;
-
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b10000000;
-
-        let mut key_path_3 = [0; 32];
+        let mut key_path_3 = [0; 32].to_vec();
         key_path_3[0] = 0b10000010;
-
-        let mut key_path_4 = [0; 32];
+        let mut key_path_4 = [0; 32].to_vec();
         key_path_4[0] = 0b10010001;
-
-        let mut key_path_5 = [0; 32];
+        let mut key_path_5 = [0; 32].to_vec();
         key_path_5[0] = 0b10010011;
 
         let sibling1 = [1; 32];
@@ -1327,13 +1328,13 @@ mod tests {
 
         let verified_multi_proof = verify::<Blake3Hasher>(&multi_proof, TERMINATOR).unwrap();
 
-        let mut key_path_0 = [0; 32];
+        let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00001000;
 
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b00010000;
 
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b10000000;
 
         let ops = vec![
@@ -1362,13 +1363,13 @@ mod tests {
         //   / \
         //  v0  v2
 
-        let mut key_path_0 = [0; 32];
+        let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00000000;
 
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b10000000;
 
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b01000000;
 
         let leaf_0 = LeafData {
@@ -1425,27 +1426,23 @@ mod tests {
         //   / \
         //  v0  v2
 
-        let mut key_path_0 = [0; 32];
+        let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00000000;
-
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b10000000;
-
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b01000000;
 
         let leaf_0 = LeafData {
-            key_path: key_path_0,
+            key_path: key_path_0.clone(),
             value_hash: [0; 32],
         };
-
         let leaf_1 = LeafData {
-            key_path: key_path_1,
+            key_path: key_path_1.clone(),
             value_hash: [1; 32],
         };
-
         let leaf_2 = LeafData {
-            key_path: key_path_2,
+            key_path: key_path_2.clone(),
             value_hash: [2; 32],
         };
 
@@ -1476,17 +1473,17 @@ mod tests {
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
 
-        let mut key_path_3 = key_path_1;
+        let mut key_path_3 = key_path_1.clone();
         key_path_3[0] = 0b10100000;
 
-        let mut key_path_4 = key_path_0;
+        let mut key_path_4 = key_path_0.clone();
         key_path_4[0] = 0b00000100;
 
         let ops = vec![
-            (key_path_0, Some([2; 32])),
-            (key_path_4, Some([1; 32])),
+            (key_path_0.clone(), Some([2; 32])),
+            (key_path_4.clone(), Some([1; 32])),
             (key_path_1, None),
-            (key_path_3, Some([1; 32])),
+            (key_path_3.clone(), Some([1; 32])),
         ];
 
         let final_state = vec![
@@ -1517,9 +1514,10 @@ mod tests {
         //         l8a l8b l8c l8d
 
         let make_leaf = |key_path, value_byte| {
+            let value_hash = [value_byte; 32];
             let leaf_data = LeafData {
                 key_path,
-                value_hash: [value_byte; 32],
+                value_hash,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1528,22 +1526,22 @@ mod tests {
         let internal_hash =
             |left, right| Blake3Hasher::hash_internal(&InternalData { left, right });
 
-        let mut key_path_0 = [0; 32];
+        let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00000000;
 
-        let mut key_path_1 = [0; 32];
+        let mut key_path_1 = [0; 32].to_vec();
         key_path_1[0] = 0b00000001;
 
-        let mut key_path_2 = [0; 32];
+        let mut key_path_2 = [0; 32].to_vec();
         key_path_2[0] = 0b00001000;
 
-        let mut key_path_3 = [0; 32];
+        let mut key_path_3 = [0; 32].to_vec();
         key_path_3[0] = 0b00001001;
 
-        let (leaf_a, l8a) = make_leaf(key_path_0, 1);
-        let (leaf_b, l8b) = make_leaf(key_path_1, 1);
-        let (leaf_c, l8c) = make_leaf(key_path_2, 1);
-        let (leaf_d, l8d) = make_leaf(key_path_3, 1);
+        let (leaf_a, l8a) = make_leaf(key_path_0.clone(), 1);
+        let (leaf_b, l8b) = make_leaf(key_path_1.clone(), 1);
+        let (leaf_c, l8c) = make_leaf(key_path_2.clone(), 1);
+        let (leaf_d, l8d) = make_leaf(key_path_3.clone(), 1);
 
         let i7a = internal_hash(l8a, l8b);
         let i7b = internal_hash(l8c, l8d);
@@ -1594,7 +1592,10 @@ mod tests {
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
 
-        let ops = vec![(key_path_0, Some([69; 32])), (key_path_3, Some([69; 32]))];
+        let ops = vec![
+            (key_path_0.clone(), Some([69; 32])),
+            (key_path_3.clone(), Some([69; 32])),
+        ];
 
         let (_, l8a) = make_leaf(key_path_0, 69);
         let (_, l8b) = make_leaf(key_path_1, 1);
@@ -1635,7 +1636,7 @@ mod tests {
         //        / \                    /  \
         //       v0  v1                 v4   T
 
-        let path = |byte| [byte; 32];
+        let path = |byte| [byte; 32].to_vec();
 
         let k0 = path(0b00000000);
         let k1 = path(0b00011000);
@@ -1644,10 +1645,11 @@ mod tests {
         let k4 = path(0b11000011);
         let k5 = path(0b11100010);
 
-        let make_leaf = |key_path| {
+        let make_leaf = |key_path: Vec<u8>| {
+            let value_hash = [key_path[0]; 32];
             let leaf_data = LeafData {
                 key_path,
-                value_hash: [key_path[0]; 32],
+                value_hash,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1723,7 +1725,7 @@ mod tests {
         //               /  \
         //              v1  v2
 
-        let path = |byte| [byte; 32];
+        let path = |byte| [byte; 32].to_vec();
 
         let k0 = path(0b00000000);
         let k1 = path(0b10000000);
@@ -1731,10 +1733,11 @@ mod tests {
         let k3 = path(0b10011100);
         let k4 = path(0b10011110);
 
-        let make_leaf = |key_path| {
+        let make_leaf = |key_path: Vec<u8>| {
+            let value_hash = [key_path[0]; 32];
             let leaf_data = LeafData {
                 key_path,
-                value_hash: [key_path[0]; 32],
+                value_hash,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1807,7 +1810,7 @@ mod tests {
 
         // Helper to create KeyPath from BitVec (simplified, assumes short paths)
         let keypath_from_bits = |bits: &BitSlice<u8, Msb0>| -> KeyPath {
-            let mut kp = KeyPath::default();
+            let mut kp = vec![0; 32];
 
             for (i, bit) in bits.iter().by_vals().enumerate() {
                 if i >= 256 {
