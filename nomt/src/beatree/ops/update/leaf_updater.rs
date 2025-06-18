@@ -37,8 +37,10 @@ impl BaseLeaf {
         // apply binary search only on a subset of all cell_pointers
         let interesed_cell_pointers = &self.node.cell_pointers()[self.low..];
         let res = interesed_cell_pointers.binary_search_by(|cell_pointer| {
-            let k = leaf_node::extract_key(cell_pointer);
-            k.cmp(&key)
+            // TODO: update besed on new leaf encoding
+            //let k = leaf_node::extract_key(cell_pointer);
+            //k.cmp(&key)
+            todo!()
         });
 
         // the returned position is relative to `cell_pointers[self.low..]`
