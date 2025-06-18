@@ -363,8 +363,10 @@ impl LeafIterator {
         let index = self.start.take().map_or(0, |start| {
             let cell_pointers = leaf.cell_pointers();
             let res = cell_pointers.binary_search_by(|cell_pointer| {
-                let k = super::leaf::node::extract_key(cell_pointer);
-                k.cmp(&start)
+                // TODO: update based on the new leaf encoding
+                //let k = super::leaf::node::extract_key(cell_pointer);
+                //k.cmp(&start)
+                todo!()
             });
 
             res.unwrap_or_else(|i| i)
