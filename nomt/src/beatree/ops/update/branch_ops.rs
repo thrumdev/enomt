@@ -465,10 +465,10 @@ mod tests {
             .map(|i| key(i))
             .take_while(|key| {
                 let res = !rightsized;
-                rightsized = gauge.body_size_after(*key, separator_len(key)) >= target;
+                rightsized = gauge.body_size_after(&key, separator_len(key)) >= target;
 
                 if res {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                 }
                 res
             })
@@ -507,10 +507,10 @@ mod tests {
             .map(|i| (i, get_key(&branch, i)))
             .take_while(|(_i, key)| {
                 let res = !rightsized;
-                rightsized = gauge.body_size_after(*key, separator_len(key)) >= target;
+                rightsized = gauge.body_size_after(&key, separator_len(key)) >= target;
 
                 if res {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                 }
                 res
             })
@@ -609,10 +609,10 @@ mod tests {
             .take_while(|key| {
                 let res = !rightsized;
                 rightsized =
-                    gauge.body_size_after(*key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                 }
                 res
             })
@@ -658,10 +658,10 @@ mod tests {
             .take_while(|key| {
                 let res = !rightsized;
                 rightsized =
-                    gauge.body_size_after(*key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                 }
                 res
             })
@@ -703,10 +703,10 @@ mod tests {
         ops_tracker.ops = (0..)
             .map(|i| compressed_key(i))
             .take_while(|key| {
-                if gauge.body_size_after(*key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
+                if gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
                     false
                 } else {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                     true
                 }
             })
@@ -731,10 +731,10 @@ mod tests {
             .take_while(|(_i, key)| {
                 let res = !rightsized;
                 rightsized =
-                    gauge.body_size_after(*key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                 }
                 res
             })
@@ -753,8 +753,8 @@ mod tests {
         // requirement has been found has been updated to insert, but also all subsequent operations.
         for i in n_insert_op..res_ops.len() {
             assert!(matches!(
-                res_ops[i],
-                BranchOp::Insert(k, PageNumber(_)) if k == uncompressed_key(i - n_insert_op)
+                &res_ops[i],
+                BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
             ));
         }
 
@@ -776,10 +776,10 @@ mod tests {
         ops_tracker.ops = (0..)
             .map(|i| compressed_key(i))
             .take_while(|key| {
-                if gauge.body_size_after(*key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
+                if gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
                     false
                 } else {
-                    gauge.ingest_key(*key, separator_len(key));
+                    gauge.ingest_key(&key, separator_len(key));
                     true
                 }
             })
@@ -844,8 +844,8 @@ mod tests {
         // requirement has been found has been updated to insert, but also all subsequent operations.
         for i in n_insert_op..res_ops.len() {
             assert!(matches!(
-                res_ops[i],
-                BranchOp::Insert(k, PageNumber(_)) if k == uncompressed_key(i - n_insert_op)
+                &res_ops[i],
+                BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
             ));
         }
 
@@ -895,7 +895,7 @@ mod tests {
         let mut sum_separator_lengths = 0;
         for (key, _) in keys.clone() {
             let len = separator_len(&key);
-            base_node_gauge.ingest_key(key, len);
+            base_node_gauge.ingest_key(&key, len);
             sum_separator_lengths += len;
         }
 
@@ -992,7 +992,7 @@ mod tests {
         let mut sum_separator_lengths = 0;
         for (key, _) in keys.clone() {
             let len = separator_len(&key);
-            base_node_gauge.ingest_key(key, len);
+            base_node_gauge.ingest_key(&key, len);
             sum_separator_lengths += len;
         }
 
@@ -1017,12 +1017,12 @@ mod tests {
 
         // insert remains insert
         ops_tracker.replace_with_insert(None, 0);
-        assert!(matches!(ops_tracker.ops[0], BranchOp::Insert(k,..) if k == key(0)));
+        assert!(matches!(&ops_tracker.ops[0], BranchOp::Insert(k,..) if *k == key(0)));
         assert_eq!(ops_tracker.ops.len(), 4);
 
         // update becomes insert
         ops_tracker.replace_with_insert(Some(&base), 1);
-        assert!(matches!(ops_tracker.ops[1], BranchOp::Insert(k,..) if k == key(1)));
+        assert!(matches!(&ops_tracker.ops[1], BranchOp::Insert(k,..) if *k == key(1)));
         assert_eq!(ops_tracker.ops.len(), 4);
 
         // keep becomes multiple inserts
@@ -1034,7 +1034,7 @@ mod tests {
             assert!(matches!(op, BranchOp::Insert(k,..) if *k == key(i + 2)));
         }
         assert!(
-            matches!(ops_tracker.ops[ops_tracker.ops.len() - 1], BranchOp::Insert(k,..) if k == key(n_keys + 2))
+            matches!(&ops_tracker.ops[ops_tracker.ops.len() - 1], BranchOp::Insert(k,..) if *k == key(n_keys + 2))
         );
         assert_eq!(ops_tracker.ops.len(), 2 + n_keys);
     }
@@ -1060,8 +1060,8 @@ mod tests {
 
         ops_tracker.extract_insert_from_keep_chunk(&base, 0);
         assert_eq!(ops_tracker.ops.len(), 2);
-        assert!(matches!(ops_tracker.ops[0], BranchOp::Insert(k,..) if k == key(0)));
-        assert!(matches!(ops_tracker.ops[1], BranchOp::KeepChunk(c) if c.len() == n_keys - 1));
+        assert!(matches!(&ops_tracker.ops[0], BranchOp::Insert(k,..) if *k == key(0)));
+        assert!(matches!(&ops_tracker.ops[1], BranchOp::KeepChunk(c) if c.len() == n_keys - 1));
 
         // 0-sized chunks are not allowed.
         let chunk = KeepChunk {
@@ -1072,6 +1072,6 @@ mod tests {
         ops_tracker.ops = vec![BranchOp::KeepChunk(chunk)];
         ops_tracker.extract_insert_from_keep_chunk(&base, 0);
         assert_eq!(ops_tracker.ops.len(), 1);
-        assert!(matches!(ops_tracker.ops[0], BranchOp::Insert(k,..) if k == key(0)));
+        assert!(matches!(&ops_tracker.ops[0], BranchOp::Insert(k,..) if *k == key(0)));
     }
 }

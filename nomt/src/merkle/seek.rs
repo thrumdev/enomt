@@ -435,7 +435,8 @@ impl RequestState {
 
 fn range_bounds(raw_path: KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
     if depth == 0 {
-        return (KeyPath::default(), None);
+        // TODO: once var-len keys are fully supported the first item in separator will become vec![0]
+        return (vec![0; 32], None);
     }
     let start = raw_path;
     let mut end = start.clone();
@@ -909,23 +910,24 @@ mod tests {
     #[test]
     fn key_range() {
         fn make_path(path: BitVec<u8, Msb0>) -> KeyPath {
-            let mut k = KeyPath::default();
+            // TODO: update with `KeyPath::default()` once we var-len keys are fully accepted
+            let mut k = vec![0; 32];
             k.view_bits_mut::<Msb0>()[..path.len()].copy_from_bitslice(&path);
             k
         }
 
         let key_a = make_path(bitvec![u8, Msb0; 0, 0, 0, 0]);
-        assert_eq!(range_bounds(key_a, 0).1, None);
+        assert_eq!(range_bounds(key_a.clone(), 0).1, None);
         assert_eq!(
-            range_bounds(key_a, 1).1,
+            range_bounds(key_a.clone(), 1).1,
             Some(make_path(bitvec![u8, Msb0; 1]))
         );
         assert_eq!(
-            range_bounds(key_a, 2).1,
+            range_bounds(key_a.clone(), 2).1,
             Some(make_path(bitvec![u8, Msb0; 0, 1]))
         );
         assert_eq!(
-            range_bounds(key_a, 3).1,
+            range_bounds(key_a.clone(), 3).1,
             Some(make_path(bitvec![u8, Msb0; 0, 0, 1]))
         );
         assert_eq!(
@@ -934,10 +936,10 @@ mod tests {
         );
 
         let key_b = make_path(bitvec![u8, Msb0; 1, 1, 1, 1]);
-        assert_eq!(range_bounds(key_b, 0).1, None);
-        assert_eq!(range_bounds(key_b, 1).1, None);
-        assert_eq!(range_bounds(key_b, 2).1, None);
-        assert_eq!(range_bounds(key_b, 3).1, None);
+        assert_eq!(range_bounds(key_b.clone(), 0).1, None);
+        assert_eq!(range_bounds(key_b.clone(), 1).1, None);
+        assert_eq!(range_bounds(key_b.clone(), 2).1, None);
+        assert_eq!(range_bounds(key_b.clone(), 3).1, None);
         assert_eq!(range_bounds(key_b, 4).1, None);
 
         let key_c = make_path(bitvec![u8, Msb0; 0, 1, 0]);

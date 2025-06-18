@@ -291,7 +291,8 @@ impl LeafUpdater {
             .as_ref()
             .or(self.base.as_ref().map(|b| &b.separator))
             .cloned()
-            .unwrap_or(vec![])
+            // TODO: this will become a vec![0] once var len keys are fully supported
+            .unwrap_or(vec![0; 32])
     }
 
     // Starting from the specified index `from` within `self.ops`, consume and possibly
@@ -566,7 +567,7 @@ mod tests {
     }
 
     fn key(x: u8) -> Key {
-        [x; 32]
+        vec![x; 32]
     }
 
     fn make_leaf(vs: Vec<(Key, Vec<u8>, bool)>) -> Arc<LeafNode> {
@@ -955,7 +956,7 @@ mod tests {
 
         updater.try_build_leaves(&mut new_leaves, midpoint).unwrap();
 
-        let leaf_1 = &new_leaves.inner.get(&[0; 32]).unwrap().0;
+        let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
         let leaf_body_size = body_size(leaf_1.n(), leaf_1.values_size(0, leaf_1.n()));
         assert!(leaf_body_size < midpoint);
@@ -1001,7 +1002,7 @@ mod tests {
         updater.try_build_leaves(&mut new_leaves, midpoint).unwrap();
 
         // A leaf is perfectly created.
-        let leaf_1 = &new_leaves.inner.get(&[0; 32]).unwrap().0;
+        let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
         let leaf_body_size = body_size(3, leaf_1.values_size(0, 3));
         assert!(leaf_body_size > midpoint);
@@ -1115,7 +1116,7 @@ mod tests {
 
         let base = BaseLeaf {
             node: leaf.clone(),
-            separator: [0; 32],
+            separator: vec![0; 32],
             low: 0,
         };
 

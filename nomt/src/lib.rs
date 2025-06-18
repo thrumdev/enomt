@@ -900,7 +900,10 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
 
     // cases 1/2
     let read_tx = store.read_transaction();
-    let mut iterator = read_tx.iterator(beatree::Key::default(), None);
+    // TODO: Once var len keys are fully supported, the first item will become vec![0]
+    // The reason is that the leaf iterator has an early return if nothing is found in the
+    // index, and nothing is found because the first item is [0; 32], which is bigger than [0].
+    let mut iterator = read_tx.iterator(vec![0; 32], None);
 
     let io_handle = store.io_pool().make_handle();
 

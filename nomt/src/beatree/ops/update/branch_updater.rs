@@ -587,12 +587,12 @@ pub mod tests {
     fn gauge_stop_uncompressed() {
         let mut gauge = BranchGauge::default();
 
-        gauge.ingest_key([0; 32], 0);
+        gauge.ingest_key(&vec![0; 32], 0);
 
         // push items with a long (16-byte) shared prefix until just before the halfway point.
         let mut items: Vec<Key> = (1..1000u16)
             .map(|i| {
-                let mut key = [0; 32];
+                let mut key = vec![0; 32];
                 key[16..18].copy_from_slice(&i.to_le_bytes());
                 key
             })
@@ -602,27 +602,27 @@ pub mod tests {
 
         for item in items {
             let len = separator_len(&item);
-            if gauge.body_size_after(item, len) >= BRANCH_MERGE_THRESHOLD {
+            if gauge.body_size_after(&item, len) >= BRANCH_MERGE_THRESHOLD {
                 break;
             }
 
-            gauge.ingest_key(item, len);
+            gauge.ingest_key(&item, len);
         }
 
         assert!(gauge.body_size() < BRANCH_MERGE_THRESHOLD);
 
         // now insert an item that collapses the prefix, causing the previously underfull node to
         // become overfull.
-        let unprefixed_key = [0xff; 32];
-        assert!(gauge.body_size_after(unprefixed_key, 256) > BRANCH_NODE_BODY_SIZE);
+        let unprefixed_key = vec![0xff; 32];
+        assert!(gauge.body_size_after(&unprefixed_key, 256) > BRANCH_NODE_BODY_SIZE);
 
         // stop compression. now we can accept more items without collapsing the prefix.
         gauge.stop_prefix_compression();
-        assert!(gauge.body_size_after(unprefixed_key, 256) < BRANCH_NODE_BODY_SIZE);
+        assert!(gauge.body_size_after(&unprefixed_key, 256) < BRANCH_NODE_BODY_SIZE);
     }
 
     pub fn prefixed_key(prefix_byte: u8, prefix_len: usize, i: usize) -> Key {
-        let mut k = [0u8; 32];
+        let mut k = vec![0u8; 32];
         for x in k.iter_mut().take(prefix_len) {
             *x = prefix_byte;
         }
@@ -641,7 +641,8 @@ pub mod tests {
         let branch = BranchNode::new_in(&PAGE_POOL);
         let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_len);
         for (k, pn) in vs {
-            builder.push(k, separator_len(&k), pn as u32);
+            let separator_len = separator_len(&k);
+            builder.push(k, separator_len, pn as u32);
         }
 
         builder.finish()
@@ -661,12 +662,12 @@ pub mod tests {
             let next_key = key(items.len());
             let s_len = separator_len(&next_key);
 
-            let size = gauge.body_size_after(next_key, s_len);
+            let size = gauge.body_size_after(&next_key, s_len);
             if !body_size_predicate(size) {
                 break;
             }
-            items.push((next_key, items.len()));
-            gauge.ingest_key(next_key, s_len);
+            items.push((next_key.clone(), items.len()));
+            gauge.ingest_key(&next_key, s_len);
         }
 
         make_branch(items)
@@ -689,13 +690,13 @@ pub mod tests {
 
             let s_len = separator_len(&next_key);
 
-            let size = gauge.body_size_after(next_key, s_len);
+            let size = gauge.body_size_after(&next_key, s_len);
             if size >= body_size_target {
                 break;
             }
 
-            items.push((next_key, items.len()));
-            gauge.ingest_key(next_key, s_len);
+            items.push((next_key.clone(), items.len()));
+            gauge.ingest_key(&next_key, s_len);
         }
 
         let mut branch_node = make_raw_branch(items);
@@ -706,13 +707,13 @@ pub mod tests {
     #[test]
     fn is_in_scope() {
         let mut updater = BranchUpdater::new(PAGE_POOL.clone(), None, None);
-        assert!(updater.is_in_scope(&[0xff; 32]));
+        assert!(updater.is_in_scope(&[0xff; 32].to_vec()));
 
-        updater.reset_base(None, Some([0xfe; 32]));
-        assert!(updater.is_in_scope(&[0xf0; 32]));
-        assert!(updater.is_in_scope(&[0xfd; 32]));
-        assert!(!updater.is_in_scope(&[0xfe; 32]));
-        assert!(!updater.is_in_scope(&[0xff; 32]));
+        updater.reset_base(None, Some([0xfe; 32].to_vec()));
+        assert!(updater.is_in_scope(&[0xf0; 32].to_vec()));
+        assert!(updater.is_in_scope(&[0xfd; 32].to_vec()));
+        assert!(!updater.is_in_scope(&[0xfe; 32].to_vec()));
+        assert!(!updater.is_in_scope(&[0xff; 32].to_vec()));
     }
 
     #[test]
@@ -1013,7 +1014,7 @@ pub mod tests {
             let mut gauge = BranchGauge::default();
             for i in 0..new_branch_1.n() as usize {
                 let key = get_key(&new_branch_1, i);
-                gauge.ingest_key(key, separator_len(&key))
+                gauge.ingest_key(&key, separator_len(&key))
             }
             gauge.body_size()
         };
@@ -1039,18 +1040,18 @@ pub mod tests {
 
         let mut updater = BranchUpdater::new(PAGE_POOL.clone(), None, None);
         let expected_cutoff = uncompressed_key(u16::MAX as usize);
-        updater.reset_base(None, Some(expected_cutoff));
+        updater.reset_base(None, Some(expected_cutoff.clone()));
 
         // Ingesting keys up to a point where just one single key which doesn't share the
         // prefix makes the body size to exceed BRANCH_NODE_BODY_SIZE.
         loop {
             let key = compressed_key(n_keys);
 
-            gauge.ingest_key(key, separator_len(&key));
+            gauge.ingest_key(&key, separator_len(&key));
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
 
             let unc_key = uncompressed_key(n_keys + 1);
-            if gauge.body_size_after(unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
+            if gauge.body_size_after(&unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
                 updater.ingest(unc_key, Some(PageNumber((n_keys + 1) as u32)));
                 n_keys += 2;
                 break;
@@ -1088,11 +1089,11 @@ pub mod tests {
         loop {
             let key = compressed_key(n_keys);
             let len = separator_len(&key);
-            if gauge.body_size_after(key, len) > BRANCH_MERGE_THRESHOLD {
+            if gauge.body_size_after(&key, len) > BRANCH_MERGE_THRESHOLD {
                 break;
             }
 
-            gauge.ingest_key(key, len);
+            gauge.ingest_key(&key, len);
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
             n_keys += 1;
         }
@@ -1127,11 +1128,11 @@ pub mod tests {
         loop {
             let key = compressed_key(n_keys);
 
-            gauge.ingest_key(key, separator_len(&key));
+            gauge.ingest_key(&key, separator_len(&key));
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
 
             let unc_key = uncompressed_key(n_keys + 1);
-            if gauge.body_size_after(unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
+            if gauge.body_size_after(&unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
                 updater.ingest(unc_key, Some(PageNumber((n_keys + 1) as u32)));
                 break;
             }

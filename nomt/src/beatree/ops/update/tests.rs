@@ -48,9 +48,11 @@ lazy_static! {
             .try_into()
             .unwrap()
     };
-    static ref KEYS: Vec<[u8; 32]> = rand_keys(LEAF_STAGE_INITIAL_CAPACITY);
-    static ref SEPARATORS: Vec<[u8; 32]> = {
-        let mut separators = vec![[0; 32]];
+    static ref KEYS: Vec<Vec<u8>> = rand_keys(LEAF_STAGE_INITIAL_CAPACITY);
+    static ref SEPARATORS: Vec<Vec<u8>> = {
+        // TODO: once var len keys are fully supported the first item in
+        // separator will become vec![0]
+        let mut separators = vec![vec![0; 32]];
         separators.extend(
             rand_keys(BRANCH_STAGE_INITIAL_CAPACITY)
                 .windows(2)
@@ -66,12 +68,12 @@ lazy_static! {
         ThreadPool::with_name("beatree-update-test".to_string(), 64);
 }
 
-fn rand_keys(n: usize) -> Vec<[u8; 32]> {
+fn rand_keys(n: usize) -> Vec<Vec<u8>> {
     let mut rng = rand_pcg::Lcg64Xsh32::from_seed(*SEED);
     let mut items = BTreeSet::new();
     while items.len() < n {
-        let mut key = [0; 32];
-        rng.fill(&mut key);
+        let mut key = vec![0; 32];
+        rng.fill(&mut key[..]);
         items.insert(key);
     }
     items.into_iter().collect()
@@ -81,7 +83,7 @@ struct TreeData {
     ln_fd: Arc<File>,
     ln_freelist_pn: u32,
     ln_bump: u32,
-    init_items: BTreeMap<[u8; 32], Vec<u8>>,
+    init_items: BTreeMap<Vec<u8>, Vec<u8>>,
     bbn_index: Index,
 }
 
@@ -116,7 +118,7 @@ fn init_beatree() -> TreeData {
     let ln_fd = Arc::new(ln_fd);
     let bbn_fd = Arc::new(bbn_fd);
 
-    let initial_items: BTreeMap<[u8; 32], Vec<u8>> = KEYS
+    let initial_items: BTreeMap<Vec<u8>, Vec<u8>> = KEYS
         .iter()
         .cloned()
         .map(|key| (key, vec![170u8; rng.gen_range(500..MAX_LEAF_VALUE_SIZE)]))
@@ -157,13 +159,14 @@ fn init_beatree() -> TreeData {
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 struct Key {
-    inner: [u8; 32],
+    inner: Vec<u8>,
 }
 
 // required to let quickcheck generate arbitrary keys as arguments for the tests
 impl Arbitrary for Key {
     fn arbitrary(g: &mut Gen) -> Key {
-        let mut key = [0; 32];
+        // TODO: this will need to be updated to properly test var-len keys.
+        let mut key = vec![0; 32];
         for k in key.iter_mut() {
             *k = u8::arbitrary(g);
         }
@@ -212,14 +215,14 @@ impl Arbitrary for StageInputs {
 
 fn leaf_page_numbers(
     bbn_index: &Index,
-    keys: impl IntoIterator<Item = [u8; 32]>,
+    keys: impl IntoIterator<Item = Vec<u8>>,
 ) -> BTreeSet<PageNumber> {
     let mut page_numbers = BTreeSet::new();
     for key in keys {
-        let Some((_, branch)) = bbn_index.lookup(key) else {
+        let Some((_, branch)) = bbn_index.lookup(&key) else {
             continue;
         };
-        let Some((_, leaf_pn)) = ops::search_branch(&branch, key) else {
+        let Some((_, leaf_pn)) = ops::search_branch(&branch, &key) else {
             continue;
         };
 
@@ -232,7 +235,7 @@ fn leaf_page_numbers(
 // given a changeset execute the leaf stage on top of a pre-initialized nomt-db
 fn exec_leaf_stage(
     commit_concurrency: usize,
-    changeset: BTreeMap<[u8; 32], ValueChange>,
+    changeset: BTreeMap<Vec<u8>, ValueChange>,
 ) -> (LeafStageOutput, BTreeSet<PageNumber>) {
     let leaf_store = TREE_DATA.leaf_store();
     let leaf_reader = StoreReader::new(leaf_store.clone(), PAGE_POOL.clone());
@@ -270,8 +273,8 @@ fn exec_leaf_stage(
 fn is_valid_leaf_stage_output(
     output: LeafStageOutput,
     mut used_page_numbers: BTreeSet<PageNumber>,
-    deletions: BTreeSet<[u8; 32]>,
-    insertions: BTreeMap<[u8; 32], Vec<u8>>,
+    deletions: BTreeSet<Vec<u8>>,
+    insertions: BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> bool {
     if output.leaf_changeset.is_empty() {
         return true;
@@ -361,7 +364,7 @@ fn leaf_stage_inner(input: StageInputs) -> TestResult {
         .into_iter()
         // rescale deletions to contain indexes over only alredy present items in the db
         .map(|d| rescale(d, 0, KEYS.len()))
-        .map(|index| (KEYS[index], ValueChange::Delete))
+        .map(|index| (KEYS[index].clone(), ValueChange::Delete))
         .collect();
 
     let insertions: BTreeMap<_, _> = input
@@ -372,7 +375,7 @@ fn leaf_stage_inner(input: StageInputs) -> TestResult {
         .map(|(k, size)| (k.inner, ValueChange::Insert(vec![170; size])))
         .collect();
 
-    let mut changeset: BTreeMap<[u8; 32], ValueChange> = insertions.clone();
+    let mut changeset: BTreeMap<Vec<u8>, ValueChange> = insertions.clone();
     changeset.extend(deletions.clone());
 
     let (leaf_stage_output, prior_leaf_page_numbers) = exec_leaf_stage(64, changeset);
@@ -406,7 +409,7 @@ fn leaf_stage() {
 // Initialize a bbn_index using the provided separators.
 // The reasons why this initialization is required are the same as those for `init_beatree`
 // It is also used by `enforce_first_leaf_separator` to avoid initializing the entire beatree.
-fn init_bbn_index(separators: &[[u8; 32]]) -> Index {
+fn init_bbn_index(separators: &[Vec<u8>]) -> Index {
     let mut rng = rand_pcg::Lcg64Xsh32::from_seed(*SEED);
 
     let mut bbn_index = Index::default();
@@ -432,13 +435,13 @@ fn init_bbn_index(separators: &[[u8; 32]]) -> Index {
 }
 
 fn is_valid_branch_stage_output(
-    changed_branches: BTreeMap<[u8; 32], Arc<BranchNode>>,
+    changed_branches: BTreeMap<Vec<u8>, Arc<BranchNode>>,
     branch_stage_output: BranchStageOutput,
     mut bbn_page_numbers: BTreeSet<u32>,
-    insertions: BTreeSet<[u8; 32]>,
-    deletions: BTreeSet<[u8; 32]>,
+    insertions: BTreeSet<Vec<u8>>,
+    deletions: BTreeSet<Vec<u8>>,
 ) -> bool {
-    let mut expected_values: BTreeSet<[u8; 32]> = SEPARATORS.iter().cloned().collect();
+    let mut expected_values: BTreeSet<Vec<u8>> = SEPARATORS.iter().cloned().collect();
     expected_values.extend(insertions.clone());
     expected_values.retain(|k| !deletions.contains(k));
 
@@ -507,7 +510,7 @@ fn branch_stage_inner(input: StageInputs) -> TestResult {
         .into_iter()
         // rescale deletions to contain indexes over only alredy present items in the db
         .map(|d| rescale(d, 0, SEPARATORS.len()))
-        .map(|index| (SEPARATORS[index], None))
+        .map(|index| (SEPARATORS[index].clone(), None))
         .collect();
 
     let insertions: BTreeMap<_, _> = input
@@ -528,12 +531,12 @@ fn branch_stage_inner(input: StageInputs) -> TestResult {
     )
     .unwrap();
 
-    let mut changeset: BTreeMap<[u8; 32], Option<PageNumber>> = insertions.clone();
+    let mut changeset: BTreeMap<Vec<u8>, Option<PageNumber>> = insertions.clone();
     changeset.extend(deletions.clone());
 
     let bbn_page_numbers: BTreeSet<_> = changeset
         .iter()
-        .map(|(key, _)| bbn_index.lookup(*key).unwrap().1.bbn_pn())
+        .map(|(key, _)| bbn_index.lookup(&key).unwrap().1.bbn_pn())
         .collect();
 
     let mut new_bbn_index = bbn_index.clone();
@@ -601,7 +604,7 @@ fn branch_stage() {
 
 #[test]
 fn enforce_first_leaf_separator() {
-    let mut separators = vec![[0; 32]];
+    let mut separators = vec![vec![0; 32]];
     let keys = rand_keys(9);
     separators.extend(keys.windows(2).map(|w| separate(&w[0], &w[1])));
     // NOTE: The test relies entirely on the fact that `init_bbn_index`
@@ -609,13 +612,16 @@ fn enforce_first_leaf_separator() {
     let bbn_index = init_bbn_index(&separators);
 
     // nothing changes, first leaf not deleted
-    let mut leaf_changeset = vec![([1; 32], Some(PageNumber(1))), ([2; 32], None)];
+    let mut leaf_changeset = vec![(vec![1; 32], Some(PageNumber(1))), (vec![2; 32], None)];
     let prev_stage = leaf_changeset.clone();
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
     assert_eq!(leaf_changeset, prev_stage);
 
     // nothing changes, all leaves deleted
-    let mut leaf_changeset = separators.iter().map(|s| (*s, None)).collect::<Vec<_>>();
+    let mut leaf_changeset = separators
+        .iter()
+        .map(|s| (s.clone(), None))
+        .collect::<Vec<_>>();
     let prev_stage = leaf_changeset.clone();
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
     assert_eq!(leaf_changeset, prev_stage);
@@ -624,7 +630,7 @@ fn enforce_first_leaf_separator() {
     let n_take = 5;
     let mut leaf_changeset = separators
         .iter()
-        .map(|s| (*s, None))
+        .map(|s| (s.clone(), None))
         .take(n_take)
         .collect::<Vec<_>>();
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
@@ -644,11 +650,11 @@ fn enforce_first_leaf_separator() {
     let n_take = 5;
     let mut leaf_changeset = separators
         .iter()
-        .map(|s| (*s, None))
+        .map(|s| (s.clone(), None))
         .take(n_take)
         .collect::<Vec<_>>();
     // this is the new leaf with a bigger separator than one of the previous
-    leaf_changeset.push((keys[n_take + 1], Some(PageNumber(15))));
+    leaf_changeset.push((keys[n_take + 1].clone(), Some(PageNumber(15))));
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
@@ -662,11 +668,11 @@ fn enforce_first_leaf_separator() {
     let n_take = 5;
     let mut leaf_changeset = separators
         .iter()
-        .map(|s| (*s, None))
+        .map(|s| (s.clone(), None))
         .take(n_take)
         .collect::<Vec<_>>();
     // this is the new leaf with a smaller separator than one of the previous
-    leaf_changeset.push((keys[n_take - 1], Some(PageNumber(15))));
+    leaf_changeset.push((keys[n_take - 1].clone(), Some(PageNumber(15))));
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
@@ -681,11 +687,11 @@ fn enforce_first_leaf_separator() {
     let n_take = 5;
     let mut leaf_changeset = separators
         .iter()
-        .map(|s| (*s, None))
+        .map(|s| (s.clone(), None))
         .take(n_take)
         .collect::<Vec<_>>();
     // this is the new leaf with a smaller separator than one of the previous
-    leaf_changeset.push((separators[n_take], Some(PageNumber(15))));
+    leaf_changeset.push((separators[n_take].clone(), Some(PageNumber(15))));
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf

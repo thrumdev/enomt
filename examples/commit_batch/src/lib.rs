@@ -31,18 +31,18 @@ impl NomtDB {
         // Here we will move the data saved under b"key1" to b"key2" and deletes it
         //
         // NOMT expects keys to be uniformly distributed across the key space
-        let key_path_1 = sha2::Sha256::digest(b"key1").into();
-        let key_path_2 = sha2::Sha256::digest(b"key2").into();
+        let key_path_1 = sha2::Sha256::digest(b"key1").to_vec();
+        let key_path_2 = sha2::Sha256::digest(b"key2").to_vec();
 
         // First, read what is under key_path_1
         //
         // `read` will immediately return the value present in the database
-        let value = session.read(key_path_1)?;
+        let value = session.read(key_path_1.clone())?;
 
         // We are going to perform writes on both key-paths, so we have NOMT warm up the on-disk
         // data for both.
-        session.warm_up(key_path_1);
-        session.warm_up(key_path_2);
+        session.warm_up(key_path_1.clone());
+        session.warm_up(key_path_2.clone());
 
         // Retrieve the previous value of the root before committing changes
         let prev_root = nomt.root();
@@ -53,7 +53,7 @@ impl NomtDB {
             (key_path_1, KeyReadWrite::ReadThenWrite(value.clone(), None)),
             (key_path_2, KeyReadWrite::Write(value)),
         ];
-        actual_access.sort_by_key(|(k, _)| *k);
+        actual_access.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
         // The final step in handling a session involves committing all changes
         // to update the trie structure and obtaining the new root of the trie,

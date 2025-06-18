@@ -60,7 +60,7 @@ fn produced_witness_validity() {
                 None => assert!(verified.confirm_nonexistence(&read.key).unwrap()),
                 Some(ref v) => {
                     let leaf = LeafData {
-                        key_path: read.key,
+                        key_path: read.key.clone(),
                         value_hash: *v,
                     };
                     assert!(verified.confirm_value(&leaf).unwrap());
@@ -76,7 +76,7 @@ fn produced_witness_validity() {
             .skip_while(|r| r.path_index != i)
             .take_while(|r| r.path_index == i)
         {
-            write_ops.push((write.key, write.value.clone()));
+            write_ops.push((write.key.clone(), write.value.clone()));
         }
 
         if !write_ops.is_empty() {
@@ -154,7 +154,7 @@ fn test_verify_update_with_identical_paths() {
 
     // First update
     let value1 = ValueHash::default();
-    let ops1 = vec![([0; 32], Some(value1))];
+    let ops1 = vec![(vec![0; 32], Some(value1))];
     updates.push(PathUpdate {
         inner: verified_proof.clone(),
         ops: ops1,
@@ -162,7 +162,7 @@ fn test_verify_update_with_identical_paths() {
 
     // Second update with identical path
     let value2 = ValueHash::default();
-    let ops2 = vec![([1; 32], Some(value2))];
+    let ops2 = vec![(vec![1; 32], Some(value2))];
     updates.push(PathUpdate {
         inner: verified_proof, // Using the same verified proof
         ops: ops2,

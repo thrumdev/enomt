@@ -44,7 +44,7 @@ fn test_rollback_disabled() {
     let session = nomt.begin_session(SessionParams::default());
     let finished = session
         .finish(vec![(
-            hex!("0000000000000000000000000000000000000000000000000000000000000001"),
+            hex!("0000000000000000000000000000000000000000000000000000000000000001").to_vec(),
             KeyReadWrite::Write(Some(vec![1])),
         )])
         .unwrap();
@@ -67,7 +67,7 @@ fn test_rollback_to_initial() {
     let session = nomt.begin_session(SessionParams::default());
     let finished = session
         .finish(vec![(
-            hex!("0000000000000000000000000000000000000000000000000000000000000001"),
+            hex!("0000000000000000000000000000000000000000000000000000000000000001").to_vec(),
             KeyReadWrite::Write(Some(vec![1])),
         )])
         .unwrap();
@@ -123,10 +123,10 @@ impl TestPlan {
 
             // Add 3 new keys each iteration
             for j in 0..3 {
-                let mut key = [0u8; 32];
+                let mut key = vec![0u8; 32];
                 key[30] = commit_ix as u8;
                 key[31] = j as u8;
-                let key = *blake3::hash(&key).as_bytes();
+                let key = blake3::hash(&key).as_bytes().to_vec();
 
                 let value: Vec<u8> = if overflow {
                     // 32KB
@@ -140,20 +140,20 @@ impl TestPlan {
                 };
                 // vec![commit_ix as u8, j as u8];
 
-                per_commit_insert.insert(key, value.clone());
-                every_key.insert(key);
+                per_commit_insert.insert(key.clone(), value.clone());
+                every_key.insert(key.clone());
                 state_emu.insert(key.clone(), value.clone());
             }
 
             // Remove 1 key (if possible) each iteration
             if commit_ix > 1 {
-                let mut key = [0u8; 32];
+                let mut key = vec![0u8; 32];
                 key[30] = (commit_ix - 1) as u8;
                 key[31] = 0;
 
-                let key = *blake3::hash(&key).as_bytes();
-                per_commit_remove.insert(key);
-                every_key.insert(key);
+                let key = blake3::hash(&key).as_bytes().to_vec();
+                per_commit_remove.insert(key.clone());
+                every_key.insert(key.clone());
                 state_emu.remove(&key);
             }
 
@@ -227,13 +227,13 @@ impl TestPlan {
         let expected: BTreeMap<KeyPath, Value> = self.expected_values[commit_ix].clone();
         let unexpected: BTreeSet<KeyPath> = self
             .every_key
-            .difference(&expected.keys().copied().collect())
-            .copied()
+            .difference(&expected.keys().cloned().collect())
+            .cloned()
             .collect();
 
         // Verify that all expected keys are in place and have the correct value.
         for (key, expected_value) in expected {
-            let actual_value = nomt.read(key).unwrap();
+            let actual_value = nomt.read(key.clone()).unwrap();
             if actual_value.is_none() {
                 errors.push(format!(
                     "missing: the key {:x?} is not present",
@@ -251,7 +251,7 @@ impl TestPlan {
 
         // Verify that no unexpected keys are in the tree.
         for key in unexpected {
-            let actual_value = nomt.read(key).unwrap();
+            let actual_value = nomt.read(key.clone()).unwrap();
             if let Some(value) = actual_value {
                 errors.push(format!(
                     "unexpected: the key {:x?} is present in the tree with the value {:x?}",
@@ -434,14 +434,14 @@ fn test_rollback_change_history() {
     let new_value = vec![0xBB; 32];
     let finished = session
         .finish(vec![(
-            new_key,
+            new_key.clone(),
             KeyReadWrite::Write(Some(new_value.clone())),
         )])
         .unwrap();
     finished.commit(&nomt).unwrap();
 
     // Verify the new state
-    assert_eq!(nomt.read(new_key).unwrap(), Some(new_value));
+    assert_eq!(nomt.read(new_key.clone()).unwrap(), Some(new_value));
 
     // 4. Rollback to the original history
     nomt.rollback(1).unwrap();
@@ -469,7 +469,7 @@ fn test_rollback_read_then_write() {
     let original_value = vec![0xBB; 32];
     let finished = session
         .finish(vec![(
-            key,
+            key.clone(),
             KeyReadWrite::Write(Some(original_value.clone())),
         )])
         .unwrap();
@@ -480,11 +480,14 @@ fn test_rollback_read_then_write() {
     // The expected behavior is that the value from the ReadThenWrite operation takes precedence
     // over the original value.
     let session = nomt.begin_session(SessionParams::default());
-    assert_eq!(session.read(key).unwrap(), Some(original_value.clone()));
+    assert_eq!(
+        session.read(key.clone()).unwrap(),
+        Some(original_value.clone())
+    );
     let new_value = vec![0xCC; 32];
     let finished = session
         .finish(vec![(
-            key,
+            key.clone(),
             KeyReadWrite::ReadThenWrite(None, Some(new_value.clone())),
         )])
         .unwrap();

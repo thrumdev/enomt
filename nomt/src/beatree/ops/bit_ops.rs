@@ -8,7 +8,7 @@ pub fn separate(a: &Key, b: &Key) -> Key {
     //if b > a at some point b must have a 1 where a has a 0 and they are equal up to that point.
     let bit_len = prefix_len(a, b) + 1;
     let byte_len = (bit_len + 7) / 8;
-    let mut separator = Vec::with_capacity(byte_len);
+    let mut separator = vec![0; byte_len];
 
     let full_bytes = bit_len / 8;
     separator[..full_bytes].copy_from_slice(&b[..full_bytes]);
@@ -19,7 +19,12 @@ pub fn separate(a: &Key, b: &Key) -> Key {
         separator[full_bytes] = b[full_bytes] & mask;
     }
 
-    separator.to_vec()
+    // TODO: Variable-length keys are not effectively supported yet, so extend the key
+    // to 32 bytes to ensure it works like fixed-length keys.
+    let missing_bytes = 32 - separator.len();
+    separator.extend(std::iter::repeat_n(0, missing_bytes));
+
+    separator
 }
 
 pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
@@ -38,6 +43,15 @@ pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
 }
 
 pub fn separator_len(key: &Key) -> usize {
+    if key.len() != 32 {
+        todo!("separator_len must be updated")
+    }
+
+    // TODO: this will no longer be supported with var-len keys
+    if &key[..] == &[0u8; 32] {
+        return 1;
+    }
+
     let mut trailing_zeros = 0;
     'byte_offset: for byte in (0..key.len()).rev() {
         for bit in (0..8).rev() {
@@ -60,6 +74,9 @@ pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators
     let prefix_end_bit_offset = prefix_bit_len % 8;
     let (separator_bytes, separator_bit_start, separator_bit_len) = separator;
 
+    let destination_len = (prefix_bit_len + separator_bit_len + 7) / 8;
+    let mut key = vec![0; destination_len];
+
     // where the separator will start to be stored
     let start_destination = match prefix_byte_len {
         0 => 0,
@@ -67,9 +84,6 @@ pub fn reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators
         // overlap between the end of the prefix and the beginning of the separator
         len => len - 1,
     };
-
-    let separator_byte_len = (separator_bit_len + 7) / 8;
-    let mut key = Vec::with_capacity(prefix_byte_len + separator_byte_len);
 
     // shift the separator and store it in the key
     bitwise_memcpy(
@@ -395,16 +409,23 @@ mod tests {
     use bitvec::{prelude::Msb0, view::BitView};
 
     fn reference_reconstruct_key(maybe_prefix: Option<RawPrefix>, separator: RawSeparators) -> Key {
-        let mut key = [0; 32];
+        let mut key = Vec::new();
 
         let mut key_start_separator = 0;
         if let Some((prefix_bytes, prefix_bit_len)) = maybe_prefix {
+            key.extend(std::iter::repeat(0).take((prefix_bit_len + 7) / 8));
+
             key.view_bits_mut::<Msb0>()[..prefix_bit_len]
                 .copy_from_bitslice(&prefix_bytes.view_bits::<Msb0>()[..prefix_bit_len]);
+
             key_start_separator = prefix_bit_len;
         }
 
         let (separator_bytes, separator_bit_start, separator_bit_len) = separator;
+
+        let missing_bytes = ((separator_bit_len + key_start_separator + 7) / 8) - key.len();
+        key.extend(std::iter::repeat(0).take(missing_bytes));
+
         key.view_bits_mut::<Msb0>()[key_start_separator..][..separator_bit_len].copy_from_bitslice(
             &separator_bytes.view_bits::<Msb0>()[separator_bit_start..][..separator_bit_len],
         );
@@ -415,7 +436,8 @@ mod tests {
     fn reference_separate(a: &Key, b: &Key) -> Key {
         let len = reference_prefix_len(a, b) + 1;
 
-        let mut separator = [0u8; 32];
+        // TODO: update with `vec![0; (len + 7) / 8]` once we var len keys are fully accepted
+        let mut separator = vec![0; 32];
         separator.view_bits_mut::<Msb0>()[..len].copy_from_bitslice(&b.view_bits::<Msb0>()[..len]);
         separator
     }
@@ -585,9 +607,9 @@ mod tests {
     #[test]
     fn separate() {
         for prefix_bit_len in 0..256 {
-            let mut a = [255; 32];
+            let mut a = vec![255; 32];
             a.view_bits_mut::<Msb0>()[prefix_bit_len..].fill(false);
-            let b = [255; 32];
+            let b = vec![255; 32];
 
             let expected_res = reference_separate(&a, &b);
             let res = super::separate(&a, &b);
@@ -599,9 +621,9 @@ mod tests {
     #[test]
     fn prefix_len() {
         for prefix_bit_len in 0..256 {
-            let mut a = [255; 32];
+            let mut a = vec![255; 32];
             a.view_bits_mut::<Msb0>()[prefix_bit_len..].fill(false);
-            let b = [255; 32];
+            let b = vec![255; 32];
 
             let expected_res = reference_prefix_len(&a, &b);
             let res = super::prefix_len(&a, &b);
@@ -613,12 +635,12 @@ mod tests {
     #[test]
     fn separator_len() {
         for separator_bit_len in 0..257 {
-            let mut a = [255; 32];
+            let mut a = vec![255; 32];
             if separator_bit_len != 257 {
                 a.view_bits_mut::<Msb0>()[separator_bit_len..].fill(false);
             }
 
-            let expected_res = if a == [0u8; 32] {
+            let expected_res = if a == vec![0u8; 32] {
                 1
             } else {
                 256 - a.view_bits::<Msb0>().trailing_zeros()

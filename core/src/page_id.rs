@@ -210,7 +210,8 @@ impl PageId {
 
     /// Get the minimum key-path which could land in this page.
     pub fn min_key_path(&self) -> KeyPath {
-        let mut path = KeyPath::default();
+        // TODO: once var len keys are fully accepted, the base key will be vec![0]
+        let mut path = vec![0; 32];
         for (i, child_index) in self.path.iter().enumerate() {
             let bit_start = i * 6;
             let bit_end = bit_start + 6;
@@ -227,7 +228,8 @@ impl PageId {
 
     /// Get the maximum key-path which could land in this page.
     pub fn max_key_path(&self) -> KeyPath {
-        let mut path = KeyPath::default();
+        // TODO: once var len keys are fully accepted, the base key will be vec![0]
+        let mut path = vec![0; 32];
         for (i, child_index) in self.path.iter().enumerate() {
             let bit_start = i * 6;
             let bit_end = bit_start + 6;
@@ -349,7 +351,7 @@ mod tests {
         page_id_2[31] = 0b10000011; // (0b000001 + 1 << 6) + 0b000010 + 1
         let page_id_2 = PageId::decode(page_id_2).unwrap();
 
-        let mut page_ids = PageIdsIterator::new(key_path);
+        let mut page_ids = PageIdsIterator::new(key_path.to_vec());
         assert_eq!(page_ids.next(), Some(ROOT_PAGE_ID));
         assert_eq!(page_ids.next(), Some(page_id_1));
         assert_eq!(page_ids.next(), Some(page_id_2));
@@ -367,7 +369,7 @@ mod tests {
         page_id_2[30] = 0b0000001; // (0b00000011 << 6) + 0b111111 + 1 = (0b00000011 + 1) << 6
         let page_id_2 = PageId::decode(page_id_2).unwrap();
 
-        let mut page_ids = PageIdsIterator::new(key_path);
+        let mut page_ids = PageIdsIterator::new(key_path.to_vec());
         assert_eq!(page_ids.next(), Some(ROOT_PAGE_ID));
         assert_eq!(page_ids.next(), Some(page_id_1));
         assert_eq!(page_ids.next(), Some(page_id_2));
@@ -395,8 +397,8 @@ mod tests {
 
     #[test]
     fn test_page_id_overflow() {
-        let first_page_last_layer = PageIdsIterator::new([0u8; 32]).last().unwrap();
-        let last_page_last_layer = PageIdsIterator::new([255; 32]).last().unwrap();
+        let first_page_last_layer = PageIdsIterator::new([0u8; 32].to_vec()).last().unwrap();
+        let last_page_last_layer = PageIdsIterator::new([255; 32].to_vec()).last().unwrap();
         assert_eq!(
             Err(ChildPageIdError::PageIdOverflow),
             child_page_id(&first_page_last_layer, 0),

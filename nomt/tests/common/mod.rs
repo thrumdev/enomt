@@ -17,7 +17,8 @@ pub fn account_path(id: u64) -> KeyPath {
     let mut seed = [0; 16];
     seed[0..8].copy_from_slice(&id.to_le_bytes());
     let mut rng = rand_pcg::Lcg64Xsh32::from_seed(seed);
-    let mut path = KeyPath::default();
+    // TODO: once var len keys are fully supported the path will be filled starting by vec![0;4]
+    let mut path = vec![0; 32];
     for i in 0..4 {
         path[i * 4..][..4].copy_from_slice(&rng.next_u32().to_le_bytes());
     }
@@ -30,7 +31,7 @@ pub fn expected_root(accounts: u64) -> Node {
         .map(account_path)
         .map(|a| (a, *blake3::hash(&1000u64.to_le_bytes()).as_bytes()))
         .collect::<Vec<_>>();
-    ops.sort_unstable_by_key(|(a, _)| *a);
+    ops.sort_unstable_by_key(|(a, _)| a.clone());
     nomt_core::update::build_trie::<nomt::hasher::Blake3Hasher>(0, ops, |_| {})
 }
 
@@ -90,7 +91,7 @@ impl Test {
     }
 
     pub fn write(&mut self, key: KeyPath, value: Option<Vec<u8>>) {
-        match self.access.entry(key) {
+        match self.access.entry(key.clone()) {
             Entry::Occupied(mut o) => {
                 o.get_mut().write(value);
             }
@@ -106,11 +107,11 @@ impl Test {
     }
 
     pub fn read(&mut self, key: KeyPath) -> Option<Vec<u8>> {
-        match self.access.entry(key) {
+        match self.access.entry(key.clone()) {
             Entry::Occupied(o) => o.get().last_value().map(|v| v.to_vec()),
             Entry::Vacant(v) => {
                 let session = self.session.as_mut().unwrap();
-                let value = session.read(key).unwrap();
+                let value = session.read(key.clone()).unwrap();
                 session.warm_up(key);
                 v.insert(KeyReadWrite::Read(value.clone()));
                 value
@@ -121,7 +122,7 @@ impl Test {
     pub fn commit(&mut self) -> (Root, Witness) {
         let session = mem::take(&mut self.session).unwrap();
         let mut actual_access: Vec<_> = mem::take(&mut self.access).into_iter().collect();
-        actual_access.sort_by_key(|(k, _)| *k);
+        actual_access.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
         let mut finished = session.finish(actual_access).unwrap();
         let root = finished.root();
         let witness = finished.take_witness().unwrap();
@@ -136,7 +137,7 @@ impl Test {
     pub fn update(&mut self) -> (Overlay, Witness) {
         let session = mem::take(&mut self.session).unwrap();
         let mut actual_access: Vec<_> = mem::take(&mut self.access).into_iter().collect();
-        actual_access.sort_by_key(|(k, _)| *k);
+        actual_access.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
         let mut finished = session.finish(actual_access).unwrap();
         let witness = finished.take_witness().unwrap();
 

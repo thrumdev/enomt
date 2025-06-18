@@ -17,8 +17,8 @@ fn root_on_empty_db() {
 fn root_on_leaf() {
     {
         let mut t = Test::new("compute_root_leaf");
-        t.write([1; 32], Some(vec![1, 2, 3]));
-        t.commit();
+        t.write(vec![1; 32], Some(vec![1, 2, 3]));
+        let (root, _) = t.commit();
     }
 
     let t = Test::new_with_params("compute_root_leaf", 1, 1, None, false);
@@ -33,8 +33,8 @@ fn root_on_leaf() {
 fn root_on_internal() {
     {
         let mut t = Test::new("compute_root_internal");
-        t.write([0; 32], Some(vec![1, 2, 3]));
-        t.write([1; 32], Some(vec![1, 2, 3]));
+        t.write(vec![0; 32], Some(vec![1, 2, 3]));
+        t.write(vec![1; 32], Some(vec![1, 2, 3]));
         t.commit();
     }
 
