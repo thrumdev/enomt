@@ -2,24 +2,38 @@
 ///
 /// ```rust,ignore
 /// n: u16
-/// cell_pointers: [(key ++ offset); n]
+/// prefix_compressed: u16
+/// prefix_len: u16
+/// prefix: [u8; prefix_len]
+/// cell_pointers: [(cell_offset ++ key_len); n]
 /// padding: [u8] // empty space between cell_pointers and cells
-/// cells: [Cell; n]
-/// value cell: [u8]
-/// overflow cell: (u64, u256, [NodePointer]) | semantically, (value_size, value_hash, [NodePointer]).
+/// cells: [key ++ value; n]
+/// key: [u8]
+/// value: [u8]
+/// overflow value: (u64, u256, [NodePointer]) | semantically, (value_size, value_hash, [NodePointer]).
 /// ```
 ///
-/// | n | [(key ++ offset); n] | ----  | [[u8]; n] |
+/// | n | prefix | [(cell_offset ++ key_len); n] | ----  | [key ++ value; n] |
 ///
-/// Where key is an [u8; 32], and offset is the byte offset in the node
-/// to the beginning of the value.
+// TODO: update comment with max key size
+/// Where key a byte array smaller than 2^N bits, and cell_offset is the byte offset in the node
+/// to the beginning of the the cell.
 ///
 /// Cell pointers are saved in order of the key, and consequently, so are the cells.
-/// The length of the value is determined by the difference between the start offsets
-/// of this value and the next.
+/// The key starts at the relative cell_offset within the node, and its length is key_len.
+/// The length of the value is determined by the difference between the end of the key
+/// and the beginning of the next cell.
 ///
-/// When a cell is an overflow cell, the high bit in the offset is set to `1`. Only the low
-/// 15 bits should count when considering the offset.
+/// A cell_pointer is made by 12 bits of cell_offset and 9 of key_length and they are arranged in 3
+/// bytes in the following manner:
+///
+/// cell_pointer[0] = first 8 bits of the key len
+/// cell_pointer[1..3] = little endian bytes of the cell_offset
+/// cell_pointer[2] & 0x40 >> 14 = overflow bit
+/// cell_pointer[2] & 0x80 >> = msb key len
+///
+/// When a cell is an overflow cell, the overflow bit will be set to `1`. Only the low
+/// 12 bits should count when considering the offset.
 ///
 /// Cells are left-aligned and thus the last value is always attached to the end.
 ///
@@ -46,8 +60,30 @@ pub const MAX_OVERFLOW_CELL_NODE_POINTERS: usize = 15;
 /// The maximum value size supported by overflow pages, 512MiB.
 pub const MAX_OVERFLOW_VALUE_SIZE: usize = 1 << 29;
 
-/// We use the high bit to encode whether a cell is an overflow cell.
-const OVERFLOW_BIT: u16 = 1 << 15;
+/// We use the high bit to encode the msb of the key len.
+const MSB_KEY_LEN_BIT: u8 = 1 << 7;
+
+/// We use the second high bit to encode whether a cell is an overflow cell.
+const OVERFLOW_BIT: u8 = 1 << 6;
+
+/// TODO
+const MAX_CELL_POINTER_OFFSET: u16 = 1 << 12;
+/// TODO
+const MAX_KEY_LEN: u16 = 1 << 9;
+
+pub struct KeyRef<'a> {
+    prefix: &'a [u8],
+    remaining_key: &'a [u8],
+}
+
+impl<'a> KeyRef<'a> {
+    pub fn into_key(self) -> Key {
+        let mut key = Vec::with_capacity(self.prefix.len() + self.remaining_key.len());
+        key[..self.prefix.len()].copy_from_slice(self.prefix);
+        key[self.prefix.len()..].copy_from_slice(self.remaining_key);
+        key
+    }
+}
 
 pub struct LeafNode {
     pub inner: FatPage,
@@ -62,9 +98,43 @@ impl LeafNode {
         self.inner[0..2].copy_from_slice(&n.to_le_bytes());
     }
 
-    // TODO: should this return a reference?
+    pub fn prefix_compressed(&self) -> usize {
+        u16::from_le_bytes(self.inner[2..4].try_into().unwrap()) as usize
+    }
+
+    pub fn set_prefix_compressed(&mut self, prefix_len: u16) {
+        self.inner[2..4].copy_from_slice(&prefix_len.to_le_bytes());
+    }
+
+    pub fn prefix_len(&self) -> usize {
+        u16::from_le_bytes(self.inner[4..6].try_into().unwrap()) as usize
+    }
+
+    pub fn set_prefix_len(&mut self, prefix_len: u16) {
+        self.inner[4..6].copy_from_slice(&prefix_len.to_le_bytes());
+    }
+
+    pub fn prefix(&self) -> &[u8] {
+        &self.inner[6..6 + self.prefix_len()]
+    }
+
+    pub fn set_prefix(&mut self, prefix: &[u8]) {
+        self.inner[6..6 + prefix.len()].copy_from_slice(&prefix);
+    }
+
+    pub fn key_ref<'a>(&'a self, i: usize) -> KeyRef<'a> {
+        let cell_pointer = &self.cell_pointers()[i];
+        let key_len = key_len(cell_pointer);
+        let (cell_offset, _) = cell_offset(cell_pointer);
+
+        KeyRef {
+            prefix: self.prefix(),
+            remaining_key: &self.inner[cell_offset..cell_offset + key_len],
+        }
+    }
+
     pub fn key(&self, i: usize) -> Key {
-        extract_key(&self.cell_pointers()[i])
+        self.key_ref(i).into_key()
     }
 
     pub fn value(&self, i: usize) -> (&[u8], bool) {
@@ -73,9 +143,23 @@ impl LeafNode {
     }
 
     pub fn get(&self, key: &Key) -> Option<(&[u8], bool)> {
+        let prefix = self.prefix();
+
+        match key[..prefix.len()].cmp(prefix) {
+            std::cmp::Ordering::Less => return None,
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Equal => (),
+        }
+
         let cell_pointers = self.cell_pointers();
 
-        search(cell_pointers, key)
+        cell_pointers
+            .binary_search_by(|cell_pointer| {
+                let (cell_offset, _) = cell_offset(cell_pointer);
+                let key_len = key_len(cell_pointer);
+                let remaining_key = &self.inner[cell_offset..cell_offset + key_len];
+                remaining_key.cmp(key)
+            })
             .ok()
             .map(|index| self.value_range(cell_pointers, index))
             .map(|(range, overflow)| (&self.inner[range], overflow))
@@ -89,37 +173,47 @@ impl LeafNode {
     }
 
     // returns the range at which the value of a cell is stored
-    fn value_range(&self, cell_pointers: &[[u8; 34]], index: usize) -> (Range<usize>, bool) {
-        let (start, overflow) = cell_offset(cell_pointers, index);
+    fn value_range(&self, cell_pointers: &[[u8; 3]], index: usize) -> (Range<usize>, bool) {
+        let cell_pointer = &cell_pointers[index];
+        let key_len = key_len(cell_pointer);
+        let (offset, overflow) = cell_offset(cell_pointer);
+        let start = offset + key_len;
+
         let end = if index == cell_pointers.len() - 1 {
             PAGE_SIZE
         } else {
-            cell_offset(cell_pointers, index + 1).0
+            cell_offset(&cell_pointers[index + 1]).0
         };
 
         (start..end, overflow)
     }
 
-    pub fn cell_pointers(&self) -> &[[u8; 34]] {
-        let cell_pointers_end = self.n() * 34;
-        assert!(cell_pointers_end < LEAF_NODE_BODY_SIZE);
+    pub fn cell_pointers(&self) -> &[[u8; 3]] {
+        let cell_pointers_start = 2 + 2 + 2 + self.prefix_len();
+        let cell_pointers_end = self.n() * 3;
+        assert!(cell_pointers_start + cell_pointers_end < LEAF_NODE_BODY_SIZE);
 
         // SAFETY: This creates a slice of length 34 * N starting at index 2. This is ensured
         // to be within the bounds by the assertion above.
         unsafe {
-            std::slice::from_raw_parts(self.inner[2..36].as_ptr() as *const [u8; 34], self.n())
+            std::slice::from_raw_parts(
+                self.inner[cell_pointers_start..cell_pointers_start + 3].as_ptr() as *const [u8; 3],
+                self.n(),
+            )
         }
     }
 
-    fn cell_pointers_mut(&mut self) -> &mut [[u8; 34]] {
-        let cell_pointers_end = self.n() * 34;
+    fn cell_pointers_mut(&mut self) -> &mut [[u8; 3]] {
+        let cell_pointers_start = 2 + 2 + 2 + self.prefix_len();
+        let cell_pointers_end = self.n() * 3;
         assert!(cell_pointers_end < LEAF_NODE_BODY_SIZE);
 
         // SAFETY: This creates a slice of length 34 * N starting at index 2. This is ensured
         // to be within the bounds by the assertion above.
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.inner[2..36].as_mut_ptr() as *mut [u8; 34],
+                self.inner[cell_pointers_start..cell_pointers_start + 3].as_mut_ptr()
+                    as *mut [u8; 3],
                 self.n(),
             )
         }
@@ -133,6 +227,7 @@ pub struct LeafBuilder {
 }
 
 impl LeafBuilder {
+    // TODO: Update builder to support new encoding
     pub fn new(page_pool: &PagePool, n: usize, total_value_size: usize) -> Self {
         let mut leaf = LeafNode {
             inner: page_pool.alloc_fat_page(),
@@ -151,14 +246,13 @@ impl LeafBuilder {
         let offset = PAGE_SIZE - self.remaining_value_size;
         let cell_pointer = &mut self.leaf.cell_pointers_mut()[self.index];
 
-        // TODO: update to support var key len
-        assert_eq!(key.len(), 32);
-        encode_cell_pointer(
-            &mut cell_pointer[..],
-            key.try_into().unwrap(),
-            offset,
-            overflow,
-        );
+        todo!();
+        //encode_cell_pointer(
+        //&mut cell_pointer[..],
+        //key_len.try_into().unwrap(),
+        //offset,
+        //overflow,
+        //);
         self.leaf.inner[offset..][..value.len()].copy_from_slice(value);
 
         self.index += 1;
@@ -219,40 +313,44 @@ pub fn body_size(n: usize, value_size_sum: usize) -> usize {
     n * 34 + value_size_sum
 }
 
-// get the key from the given cell pointer
-pub fn extract_key(cell_pointer: &[u8; 34]) -> Key {
-    // TODO: update to support var key len
-    let mut buf = [0u8; 32];
-    buf.copy_from_slice(&cell_pointer[..32]);
-    buf.to_vec()
+// get the key length from the cell_pointer.
+fn key_len(cell_pointer: &[u8; 3]) -> usize {
+    u16::from_le_bytes([cell_pointer[0], cell_pointer[2] & MSB_KEY_LEN_BIT >> 15]) as usize
 }
 
 // get the cell offset and whether the cell is an overflow cell.
-fn cell_offset(cell_pointers: &[[u8; 34]], index: usize) -> (usize, bool) {
-    let mut buf = [0; 2];
-    buf.copy_from_slice(&cell_pointers[index][32..34]);
-    let val = u16::from_le_bytes(buf);
+fn cell_offset(cell_pointer: &[u8; 3]) -> (usize, bool) {
     (
-        (val & !OVERFLOW_BIT) as usize,
-        val & OVERFLOW_BIT == OVERFLOW_BIT,
+        u16::from_le_bytes([
+            cell_pointer[1],
+            cell_pointer[2] & !MSB_KEY_LEN_BIT & !OVERFLOW_BIT,
+        ]) as usize,
+        cell_pointer[2] & OVERFLOW_BIT == OVERFLOW_BIT,
     )
 }
 
 // panics if offset is bigger than 2^15 - 1.
-fn encode_cell_pointer(cell: &mut [u8], key: [u8; 32], offset: usize, overflow: bool) {
-    let mut val = u16::try_from(offset).unwrap();
-    assert!(val < OVERFLOW_BIT);
+fn encode_cell_pointer(cell_pointer: &mut [u8; 3], key_len: usize, offset: usize, overflow: bool) {
+    let key_len = u16::try_from(key_len).unwrap();
+    assert!(key_len < MAX_KEY_LEN);
+    let key_len = key_len.to_le_bytes();
 
+    let offset = u16::try_from(offset).unwrap();
+    assert!(offset < MAX_CELL_POINTER_OFFSET);
+
+    cell_pointer[0] = key_len[0];
+    cell_pointer[1..3].copy_from_slice(&offset.to_le_bytes());
     if overflow {
-        val |= OVERFLOW_BIT;
+        cell_pointer[3] |= OVERFLOW_BIT;
     }
-
-    cell[0..32].copy_from_slice(&key);
-    cell[32..34].copy_from_slice(&val.to_le_bytes());
+    if key_len[1] == 1 {
+        cell_pointer[3] |= MSB_KEY_LEN_BIT;
+    }
 }
 
 // look for key in the node. the return value has the same semantics as std binary_search*.
-fn search(cell_pointers: &[[u8; 34]], key: &Key) -> Result<usize, usize> {
+fn search(cell_pointers: &[[u8; 3]], key: &Key) -> Result<usize, usize> {
+    // TODO: Update to support prefix compression
     cell_pointers.binary_search_by(|cell| cell[0..32].cmp(key))
 }
 
