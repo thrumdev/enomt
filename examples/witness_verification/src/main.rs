@@ -37,7 +37,7 @@ fn main() -> Result<()> {
                 // Verify the correctness of the returned value when it is Some(_)
                 Some(value_hash) => {
                     let leaf = LeafData {
-                        key_path: read.key,
+                        key_path: read.key.clone(),
                         value_hash,
                     };
                     assert!(verified.confirm_value(&leaf).unwrap());
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
             .skip_while(|r| r.path_index != i)
             .take_while(|r| r.path_index == i)
         {
-            write_ops.push((write.key, write.value));
+            write_ops.push((write.key.clone(), write.value));
         }
 
         if !write_ops.is_empty() {

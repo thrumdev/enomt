@@ -414,7 +414,13 @@ pub fn get_key(node: &BranchNode, index: usize) -> Key {
     } else {
         None
     };
-    reconstruct_key(prefix, node.raw_separator(index))
+
+    // TODO: Variable-length keys are not effectively supported yet, so extend the key
+    // to 32 bytes to ensure it works like fixed-length keys.
+    let mut key = reconstruct_key(prefix, node.raw_separator(index));
+    let missing_bytes = 32 - key.len();
+    key.extend(std::iter::repeat_n(0, missing_bytes));
+    key
 }
 
 pub struct BranchNodeBuilder {
@@ -696,7 +702,7 @@ mod test {
 
     #[test]
     fn push_chunk() {
-        let mut keys = vec![[0u8; 32]; 10];
+        let mut keys = vec![vec![0u8; 32]; 10];
         for (i, key) in keys.iter_mut().enumerate() {
             key[0] = 0x11;
             if i != 0 {
@@ -715,7 +721,7 @@ mod test {
         // prefix_len: 8
         let mut builder = BranchNodeBuilder::new(BranchNode::new_in(&PAGE_POOL), 10, 10, 8);
         for (i, k) in keys.iter().enumerate() {
-            builder.push(*k, separator_len(k), i as u32);
+            builder.push(k.clone(), separator_len(k), i as u32);
         }
         let base_branch = builder.finish();
 
@@ -728,11 +734,11 @@ mod test {
             9, /*prefix_len*/
         );
         builder.push_chunk(&base_branch, 1, 4, [].into_iter());
-        let mut key255 = [0; 32];
+        let mut key255 = vec![0; 32];
         key255[0] = 0x11;
         key255[1] = 255;
         key255[2] = 255;
-        builder.push(key255, separator_len(&key255), 10);
+        builder.push(key255.clone(), separator_len(&key255), 10);
         // prefix: 00010001_1
         // key p + 1:        0000000_00000001 // cell_poiter: 15
         // key p + 2:        0000000_00000010 // cell_poiter: 29
@@ -751,7 +757,7 @@ mod test {
             7, /*prefix_len*/
         );
         builder.push_chunk(&base_branch, 1, 4, [].into_iter());
-        builder.push(key255, separator_len(&key255), 10);
+        builder.push(key255.clone(), separator_len(&key255), 10);
         // prefix: 0001000
         // key 1:         1_10000000_00000001 // cell_poiter: 17
         // key 2:         1_10000000_0000001X // cell_poiter: 33

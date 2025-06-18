@@ -111,7 +111,7 @@ impl NomtDB {
 
         let _timer_guard_commit = timer.as_mut().map(|t| t.record_span("commit_and_prove"));
         let mut actual_access: Vec<_> = access.into_iter().collect();
-        actual_access.sort_by_key(|(k, _)| *k);
+        actual_access.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
         let finished = session.finish(actual_access).unwrap();
         if self.overlay_window_capacity == 0 {
@@ -185,7 +185,7 @@ impl NomtDB {
             .map(|(access, _)| access)
             .flatten()
             .collect();
-        actual_access.sort_by_key(|(k, _)| *k);
+        actual_access.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
         let finished = session.finish(actual_access).unwrap();
         if self.overlay_window_capacity == 0 {
@@ -216,13 +216,13 @@ struct Tx<'a> {
 
 impl<'a> Transaction for Tx<'a> {
     fn read(&mut self, key: &[u8]) -> Option<Vec<u8>> {
-        let key_path = sha2::Sha256::digest(key).into();
+        let key_path = sha2::Sha256::digest(key).to_vec();
         let _timer_guard_read = self.timer.as_mut().map(|t| t.record_span("read"));
 
-        match self.access.entry(key_path) {
+        match self.access.entry(key_path.clone()) {
             Entry::Occupied(o) => o.get().last_value().map(|v| v.to_vec()),
             Entry::Vacant(v) => {
-                let value = self.session.read(key_path).unwrap();
+                let value = self.session.read(key_path.clone()).unwrap();
                 self.session.warm_up(key_path);
 
                 v.insert(KeyReadWrite::Read(value.clone()));
@@ -232,9 +232,9 @@ impl<'a> Transaction for Tx<'a> {
     }
 
     fn note_read(&mut self, key: &[u8], value: Option<Vec<u8>>) {
-        let key_path = sha2::Sha256::digest(key).into();
+        let key_path = sha2::Sha256::digest(key).to_vec();
 
-        match self.access.entry(key_path) {
+        match self.access.entry(key_path.clone()) {
             Entry::Occupied(mut o) => {
                 o.get_mut().read(value);
             }
@@ -246,10 +246,10 @@ impl<'a> Transaction for Tx<'a> {
     }
 
     fn write(&mut self, key: &[u8], value: Option<&[u8]>) {
-        let key_path = sha2::Sha256::digest(key).into();
+        let key_path = sha2::Sha256::digest(key).to_vec();
         let value = value.map(|v| v.to_vec());
 
-        match self.access.entry(key_path) {
+        match self.access.entry(key_path.clone()) {
             Entry::Occupied(mut o) => {
                 o.get_mut().write(value);
             }
@@ -258,7 +258,7 @@ impl<'a> Transaction for Tx<'a> {
             }
         }
 
-        self.session.warm_up(key_path);
+        self.session.warm_up(key_path.clone());
         self.session.preserve_prior_value(key_path);
     }
 }

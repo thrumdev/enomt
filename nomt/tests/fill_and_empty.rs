@@ -40,10 +40,10 @@ fn fill_and_empty(seed: [u8; 16], commit_concurrency: usize) {
     // inserting all the values
     let mut to_check = vec![];
     for i in 0..db_size {
-        let key = items[i];
+        let key = items[i].clone();
         let value = vec![i as u8; 400];
 
-        to_check.push((key, value.clone()));
+        to_check.push((key.clone(), value.clone()));
         t.write(key, Some(value));
 
         if (i + 1) % commit_size == 0 {
@@ -58,9 +58,9 @@ fn fill_and_empty(seed: [u8; 16], commit_concurrency: usize) {
     // deleting all the values in different order
     let mut to_check = vec![];
     for i in 0..db_size {
-        let key = items[to_delete[i]];
+        let key = items[to_delete[i]].clone();
 
-        to_check.push(key);
+        to_check.push(key.clone());
         t.write(key, None);
 
         if (i + 1) % commit_size == 0 {
@@ -75,8 +75,9 @@ fn fill_and_empty(seed: [u8; 16], commit_concurrency: usize) {
     assert!(t.commit().0.is_empty());
 }
 
-fn rand_key(rng: &mut impl Rng) -> [u8; 32] {
-    let mut key = [0; 32];
+// TODO: update with random var key size when they will be fully supported
+fn rand_key(rng: &mut impl Rng) -> Vec<u8> {
+    let mut key = vec![0; 32];
     rng.fill(&mut key[..]);
     key
 }

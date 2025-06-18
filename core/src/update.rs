@@ -272,6 +272,13 @@ mod tests {
             hash
         }
 
+        fn hash_leaf_ref(data: &trie::LeafDataRef) -> [u8; 32] {
+            Self::hash_leaf(&LeafData {
+                key_path: data.key_path.clone(),
+                value_hash: data.value_hash,
+            })
+        }
+
         fn hash_internal(data: &trie::InternalData) -> [u8; 32] {
             let mut hasher = blake3::Hasher::new();
             hasher.update(&data.left);
@@ -297,7 +304,7 @@ mod tests {
     fn leaf(key: u8) -> (LeafData, [u8; 32]) {
         let key = [key; 32];
         let leaf = trie::LeafData {
-            key_path: key.clone(),
+            key_path: key.to_vec(),
             value_hash: key.clone(),
         };
 
@@ -372,7 +379,7 @@ mod tests {
         let mut visited = Visited::at(bitvec![u8, Msb0; 0, 0, 0, 1]);
 
         let ops = [leaf_a, leaf_b, leaf_c]
-            .iter()
+            .into_iter()
             .map(|l| (l.key_path, l.value_hash))
             .collect::<Vec<_>>();
 
@@ -410,7 +417,7 @@ mod tests {
         let mut visited = Visited::default();
 
         let ops = [leaf_a, leaf_b, leaf_c, leaf_d, leaf_e]
-            .iter()
+            .into_iter()
             .map(|l| (l.key_path, l.value_hash))
             .collect::<Vec<_>>();
 

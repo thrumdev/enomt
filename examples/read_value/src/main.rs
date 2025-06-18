@@ -19,12 +19,12 @@ fn main() -> Result<()> {
         nomt.begin_session(SessionParams::default().witness_mode(WitnessMode::read_write()));
 
     // Reading a key from the database
-    let key_path = sha2::Sha256::digest(b"key").into();
-    let value = session.read(key_path)?;
+    let key_path = sha2::Sha256::digest(b"key").to_vec();
+    let value = session.read(key_path.clone())?;
 
     // Even though this key is only being read, we ask NOMT to warm up the on-disk data because
     // we will prove the read.
-    session.warm_up(key_path);
+    session.warm_up(key_path.clone());
 
     let mut finished = session
         .finish(vec![(key_path, KeyReadWrite::Read(value))])
