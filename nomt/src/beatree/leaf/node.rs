@@ -39,7 +39,7 @@
 ///
 /// The offset of the first cell also serves to detect potential overlap
 /// between the growth of cell_pointers and cells.
-use std::ops::Range;
+use std::{cell, ops::Range};
 
 use crate::{
     beatree::Key,
@@ -47,7 +47,7 @@ use crate::{
 };
 
 /// The size of the leaf node body: everything excluding the mandatory header.
-pub const LEAF_NODE_BODY_SIZE: usize = PAGE_SIZE - 2;
+pub const LEAF_NODE_BODY_SIZE: usize = PAGE_SIZE - 6;
 
 /// The maximum value size before overflow pages are used.
 pub const MAX_LEAF_VALUE_SIZE: usize = (LEAF_NODE_BODY_SIZE / 3) - 32;
@@ -72,16 +72,24 @@ const MAX_CELL_POINTER_OFFSET: u16 = 1 << 12;
 const MAX_KEY_LEN: u16 = 1 << 9;
 
 pub struct KeyRef<'a> {
-    prefix: &'a [u8],
+    prefix: Option<&'a [u8]>,
     remaining_key: &'a [u8],
 }
 
 impl<'a> KeyRef<'a> {
     pub fn into_key(self) -> Key {
-        let mut key = Vec::with_capacity(self.prefix.len() + self.remaining_key.len());
-        key[..self.prefix.len()].copy_from_slice(self.prefix);
-        key[self.prefix.len()..].copy_from_slice(self.remaining_key);
+        let Some(prefix) = self.prefix else {
+            return self.remaining_key.to_vec();
+        };
+
+        let mut key = Vec::with_capacity(prefix.len() + self.remaining_key.len());
+        key[..prefix.len()].copy_from_slice(prefix);
+        key[prefix.len()..].copy_from_slice(self.remaining_key);
         key
+    }
+
+    pub fn len(&self) -> usize {
+        self.prefix.map_or(0, |p| p.len()) + self.remaining_key.len()
     }
 }
 
@@ -127,8 +135,14 @@ impl LeafNode {
         let key_len = key_len(cell_pointer);
         let (cell_offset, _) = cell_offset(cell_pointer);
 
+        let prefix = if i < self.prefix_compressed() {
+            Some(self.prefix())
+        } else {
+            None
+        };
+
         KeyRef {
-            prefix: self.prefix(),
+            prefix,
             remaining_key: &self.inner[cell_offset..cell_offset + key_len],
         }
     }
@@ -142,16 +156,39 @@ impl LeafNode {
         (&self.inner[range], overflow)
     }
 
+    // TODO: this should probably be moved in beatree/ops/mod under search_lef
     pub fn get(&self, key: &Key) -> Option<(&[u8], bool)> {
-        let prefix = self.prefix();
-
-        match key[..prefix.len()].cmp(prefix) {
-            std::cmp::Ordering::Less => return None,
-            std::cmp::Ordering::Greater => return None,
-            std::cmp::Ordering::Equal => (),
+        let (found, index) = self.find_key_pos(key, None);
+        if !found {
+            return None;
         }
 
-        let cell_pointers = self.cell_pointers();
+        Some(self.value(index))
+    }
+
+    // TODO: this should probably be moved in beatree/ops/mod under leaf_find_key_pos
+    pub fn find_key_pos(&self, key: &Key, low: Option<usize>) -> (bool, usize) {
+        let prefix_len = self.prefix_len();
+        let prefix = self.prefix();
+        let n = self.n() as usize;
+        let prefix_compressed = self.prefix_compressed() as usize;
+        let low = low.unwrap_or(0);
+
+        let (cell_pointers, key) = match key[..prefix_len].cmp(prefix) {
+            std::cmp::Ordering::Less => return (false, 0),
+            std::cmp::Ordering::Greater if n == prefix_compressed => return (false, n),
+            std::cmp::Ordering::Greater => {
+                let from = std::cmp::max(prefix_compressed, low);
+                (&self.cell_pointers()[from..], &key[..])
+            }
+            std::cmp::Ordering::Equal => {
+                let from = std::cmp::min(prefix_compressed, low);
+                (
+                    &self.cell_pointers()[from..prefix_compressed],
+                    &key[prefix_len..],
+                )
+            }
+        };
 
         cell_pointers
             .binary_search_by(|cell_pointer| {
@@ -160,16 +197,32 @@ impl LeafNode {
                 let remaining_key = &self.inner[cell_offset..cell_offset + key_len];
                 remaining_key.cmp(key)
             })
-            .ok()
-            .map(|index| self.value_range(cell_pointers, index))
-            .map(|(range, overflow)| (&self.inner[range], overflow))
+            .map(|pos| (true, pos))
+            .map_err(|pos| (false, pos))
+            .unwrap()
     }
 
-    pub fn values_size(&self, from: usize, to: usize) -> usize {
+    pub fn values_len(&self, from: usize, to: usize) -> usize {
         let cell_pointers = self.cell_pointers();
         let value_range_start = self.value_range(cell_pointers, from).0.start;
         let value_range_end = self.value_range(cell_pointers, to - 1).0.end;
         value_range_end - value_range_start
+    }
+
+    pub fn uncompressed_keys_len(&self, from: usize, to: usize) -> usize {
+        let end_compressed = std::cmp::min(self.prefix_compressed(), to);
+        let end_non_compressed = std::cmp::max(self.prefix_compressed(), to);
+
+        let raw_keys_len = |range_cell_pointers: Range<usize>| -> usize {
+            self.cell_pointers()[range_cell_pointers]
+                .iter()
+                .map(|cell_pointer| key_len(cell_pointer))
+                .sum()
+        };
+
+        raw_keys_len(from..end_compressed)
+            + (end_compressed - from) * self.prefix_len()
+            + raw_keys_len(end_compressed..end_non_compressed)
     }
 
     // returns the range at which the value of a cell is stored
@@ -223,84 +276,126 @@ impl LeafNode {
 pub struct LeafBuilder {
     leaf: LeafNode,
     index: usize,
+    prefix_compressed: usize,
+    prefix_len: usize,
     remaining_value_size: usize,
 }
 
 impl LeafBuilder {
-    // TODO: Update builder to support new encoding
-    pub fn new(page_pool: &PagePool, n: usize, total_value_size: usize) -> Self {
+    // TODO: note keys_len must be the compressed version length
+    pub fn new(
+        page_pool: &PagePool,
+        n: usize,
+        prefix_len: usize,
+        prefix_compressed: usize,
+        keys_len: usize,
+        values_len: usize,
+    ) -> Self {
         let mut leaf = LeafNode {
             inner: page_pool.alloc_fat_page(),
         };
+
         leaf.set_n(n as u16);
+        leaf.set_prefix_len(prefix_len as u16);
+        leaf.set_prefix_compressed(prefix_compressed as u16);
         LeafBuilder {
             leaf,
             index: 0,
-            remaining_value_size: total_value_size,
+            prefix_compressed,
+            prefix_len,
+            remaining_value_size: keys_len + values_len,
         }
     }
 
-    pub fn push_cell(&mut self, key: Key, value: &[u8], overflow: bool) {
+    pub fn push(&mut self, key: &Key, value: &[u8], overflow: bool) {
         assert!(self.index < self.leaf.n());
+
+        if self.index == 0 {
+            self.leaf.set_prefix(&key[..self.prefix_len]);
+        }
+
+        let key = if self.index < self.prefix_compressed {
+            &key[self.prefix_compressed..]
+        } else {
+            &key[..]
+        };
 
         let offset = PAGE_SIZE - self.remaining_value_size;
         let cell_pointer = &mut self.leaf.cell_pointers_mut()[self.index];
 
-        todo!();
-        //encode_cell_pointer(
-        //&mut cell_pointer[..],
-        //key_len.try_into().unwrap(),
-        //offset,
-        //overflow,
-        //);
-        self.leaf.inner[offset..][..value.len()].copy_from_slice(value);
+        encode_cell_pointer(cell_pointer, key.len(), offset, overflow);
+
+        self.leaf.inner[offset..offset + key.len()].copy_from_slice(key);
+        self.leaf.inner[offset + key.len()..offset + key.len() + value.len()]
+            .copy_from_slice(value);
 
         self.index += 1;
-        self.remaining_value_size -= value.len();
+        self.remaining_value_size -= value.len() + key.len();
     }
 
-    pub fn push_chunk(&mut self, base_node: &LeafNode, from: usize, to: usize) {
-        assert!(self.index < self.leaf.n());
-
-        // copy cells, update offsets
+    pub fn push_chunk(&mut self, base: &LeafNode, from: usize, to: usize) {
         let n_items = to - from;
-        let base_node_cell_pointers = base_node.cell_pointers();
-        self.leaf.cell_pointers_mut()[self.index..self.index + n_items]
-            .copy_from_slice(&base_node_cell_pointers[from..to]);
+        assert!(self.index + n_items <= self.prefix_compressed);
 
-        let offset = PAGE_SIZE - self.remaining_value_size;
-
-        let value_range_start = base_node.value_range(base_node_cell_pointers, from).0.start;
-        let value_range_end = base_node.value_range(base_node_cell_pointers, to - 1).0.end;
-
-        // if difference is positive it needs to be added otherwise subtracted
-        let difference = offset as isize - value_range_start as isize;
-
-        if difference != 0 {
-            let positive_difference = difference.is_positive();
-            let difference = u16::try_from(difference.abs()).unwrap();
-
-            for cell in &mut self.leaf.cell_pointers_mut()[self.index..self.index + n_items] {
-                let mut buf = [0; 2];
-                buf.copy_from_slice(&cell[32..34]);
-                let mut cell_pointer_offset = u16::from_le_bytes(buf);
-
-                if positive_difference {
-                    cell_pointer_offset += difference;
-                } else {
-                    cell_pointer_offset -= difference;
-                }
-
-                cell[32..34].copy_from_slice(&cell_pointer_offset.to_le_bytes());
-            }
+        if self.index == 0 {
+            // set the prefix if this is the first inserted item
+            let key = base.key(from);
+            self.leaf.set_prefix(&key);
         }
 
-        // copy values
-        let values = &base_node.inner[value_range_start..value_range_end];
-        self.leaf.inner[offset..][..values.len()].copy_from_slice(values);
+        let byte_prefix_len_difference = base.prefix_len() as isize - self.prefix_len as isize;
+        let is_prefix_extension = byte_prefix_len_difference.is_positive();
+        let byte_prefix_len_difference = byte_prefix_len_difference.abs() as usize;
 
-        self.index += n_items;
-        self.remaining_value_size -= values.len();
+        let start_offset = PAGE_SIZE - self.remaining_value_size;
+
+        // 1. copy and update cell pointers
+        for (cell_index, base_cell_pointer) in base.cell_pointers()[from..to].iter().enumerate() {
+            let (base_key_len, value_len, overflow) = decode_cell_pointer(base_cell_pointer);
+
+            let key_len = if is_prefix_extension {
+                base_key_len + byte_prefix_len_difference
+            } else {
+                base_key_len - byte_prefix_len_difference
+            };
+
+            let offset = PAGE_SIZE - self.remaining_value_size;
+            encode_cell_pointer(
+                &mut self.leaf.cell_pointers_mut()[self.index + cell_index],
+                key_len,
+                offset,
+                overflow,
+            );
+
+            if byte_prefix_len_difference != 0 {
+                // slow path, each key needs to be copied one by one
+                // TODO: this could be made more efficient by caching the prefix and writing it
+                // directly into the new leaf, and only copying the missing part of the key form the base
+                let base_index = from + cell_index;
+                let new_key = &base.key(base_index)[self.prefix_len..];
+                assert_eq!(new_key.len(), key_len);
+                self.leaf.inner[offset..offset + key_len].copy_from_slice(new_key);
+                self.leaf.inner[offset + key_len..offset + key_len + value_len]
+                    .copy_from_slice(base.value(base_index).0);
+            }
+
+            self.remaining_value_size -= key_len + value_len;
+        }
+
+        let end_offset = PAGE_SIZE - self.remaining_value_size;
+
+        if byte_prefix_len_difference == 0 {
+            // fast path, copy all cells at once
+            let base_start_offset = cell_offset(&base.cell_pointers()[from]).0;
+            let base_end_offset = if to == base.n() {
+                PAGE_SIZE
+            } else {
+                cell_offset(&base.cell_pointers()[to + 1]).0
+            };
+
+            self.leaf.inner[start_offset..end_offset]
+                .copy_from_slice(&base.inner[base_start_offset..base_end_offset]);
+        }
     }
 
     pub fn finish(self) -> LeafNode {
@@ -309,16 +404,36 @@ impl LeafBuilder {
     }
 }
 
-pub fn body_size(n: usize, value_size_sum: usize) -> usize {
-    n * 34 + value_size_sum
+// TODO: note keys_size_sum is the compressed sum of key sizes
+pub fn body_size(prefix_len: usize, n: usize, key_size_sum: usize, value_size_sum: usize) -> usize {
+    prefix_len + n * 3 + key_size_sum + value_size_sum
+}
+
+/// Given inputs describing a set of keys for a leaf, output the compressed size if compressed
+/// with the given prefix length.
+///
+/// `prefix_compressed_items` must be greater than zero.
+/// `pre_compression_size_sum` is the sum of all key lengths, not including the first.
+pub fn compressed_key_range_size(
+    first_key_length: usize,
+    prefix_compressed_items: usize,
+    pre_compression_size_sum: usize,
+    prefix_len: usize,
+) -> usize {
+    // first length can be less than the shared prefix due to trailing zero compression.
+    // then add the total size.
+    // then subtract the size difference due to compression of the remaining items.
+    first_key_length.saturating_sub(prefix_len) + pre_compression_size_sum
+        - (prefix_compressed_items - 1) * prefix_len
 }
 
 // get the key length from the cell_pointer.
 fn key_len(cell_pointer: &[u8; 3]) -> usize {
-    u16::from_le_bytes([cell_pointer[0], cell_pointer[2] & MSB_KEY_LEN_BIT >> 15]) as usize
+    u16::from_le_bytes([cell_pointer[0], cell_pointer[2] & MSB_KEY_LEN_BIT >> 7]) as usize
 }
 
 // get the cell offset and whether the cell is an overflow cell.
+// TODO: rename
 fn cell_offset(cell_pointer: &[u8; 3]) -> (usize, bool) {
     (
         u16::from_le_bytes([
@@ -327,6 +442,13 @@ fn cell_offset(cell_pointer: &[u8; 3]) -> (usize, bool) {
         ]) as usize,
         cell_pointer[2] & OVERFLOW_BIT == OVERFLOW_BIT,
     )
+}
+
+// return key_len, value_len and overflow
+fn decode_cell_pointer(cell_pointer: &[u8; 3]) -> (usize, usize, bool) {
+    let key_len = key_len(cell_pointer);
+    let (value_len, overflow) = cell_offset(cell_pointer);
+    (key_len, value_len, overflow)
 }
 
 // panics if offset is bigger than 2^15 - 1.
@@ -341,10 +463,10 @@ fn encode_cell_pointer(cell_pointer: &mut [u8; 3], key_len: usize, offset: usize
     cell_pointer[0] = key_len[0];
     cell_pointer[1..3].copy_from_slice(&offset.to_le_bytes());
     if overflow {
-        cell_pointer[3] |= OVERFLOW_BIT;
+        cell_pointer[2] |= OVERFLOW_BIT;
     }
     if key_len[1] == 1 {
-        cell_pointer[3] |= MSB_KEY_LEN_BIT;
+        cell_pointer[2] |= MSB_KEY_LEN_BIT;
     }
 }
 
