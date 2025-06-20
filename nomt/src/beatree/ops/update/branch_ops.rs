@@ -218,7 +218,7 @@ impl BranchOpsTracker {
 
                         if gauge.body_size() < BRANCH_MERGE_THRESHOLD {
                             // Start applying items without prefix compression. we assume items are less
-                            // than half the body size, so the next item should apply cleanly.
+                            // than half the body size, so the item under pos should apply cleanly.
                             gauge.stop_prefix_compression();
                         } else {
                             // The initial target was not reached, but BRANCH_MERGE_THRESHOLD was met. To avoid

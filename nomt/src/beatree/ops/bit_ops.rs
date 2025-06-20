@@ -42,6 +42,15 @@ pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
     bit_len
 }
 
+// TODO: testing
+pub fn byte_prefix_len(key_a: &Key, key_b: &Key) -> usize {
+    key_a
+        .iter()
+        .zip(key_b.iter())
+        .take_while(|(byte_a, byte_b)| byte_a == byte_b)
+        .count()
+}
+
 pub fn separator_len(key: &Key) -> usize {
     if key.len() != 32 {
         todo!("separator_len must be updated")
