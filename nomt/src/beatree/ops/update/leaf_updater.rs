@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use crate::beatree::{
-    leaf::node::{self as leaf_node, LeafBuilder, LeafNode, LEAF_NODE_BODY_SIZE},
-    ops::bit_ops::separate,
+    leaf::node::{self as leaf_node, KeyRef, LeafBuilder, LeafNode, LEAF_NODE_BODY_SIZE},
+    ops::{
+        bit_ops::{byte_prefix_len, separate},
+        overflow,
+    },
     Key,
 };
 use crate::io::PagePool;
@@ -34,30 +37,20 @@ impl BaseLeaf {
             return None;
         }
 
-        // apply binary search only on a subset of all cell_pointers
-        let interesed_cell_pointers = &self.node.cell_pointers()[self.low..];
-        let res = interesed_cell_pointers.binary_search_by(|cell_pointer| {
-            // TODO: update besed on new leaf encoding
-            //let k = leaf_node::extract_key(cell_pointer);
-            //k.cmp(&key)
-            todo!()
-        });
+        let (found, pos) = self.node.find_key_pos(key, Some(self.low));
 
-        // the returned position is relative to `cell_pointers[self.low..]`
-        match res {
-            // if the key is found, then we return its position in the base leaf,
-            // updating `self.low` to be the item just after the found key
-            Ok(pos) => {
-                let absolute_pos = self.low + pos;
-                self.low = absolute_pos + 1;
-                return Some((true, absolute_pos));
-            }
-            // If the key is not present, then `self.low` is updated to point to
-            // the first key bigger than the one we looked for
-            Err(pos) => {
-                self.low = self.low + pos;
-                return Some((false, self.low));
-            }
+        if found {
+            // the key was present return its index and point to the right after key
+            self.low = pos + 1;
+            return Some((true, pos));
+        } else if pos == self.low {
+            // TODO: still not sure about the correctness of this branch
+            // there are no keys left bigger than the specified one
+            return None;
+        } else {
+            // key was not present, return and point to the smallest bigger key
+            self.low = pos;
+            return Some((false, pos));
         }
     }
 
@@ -65,11 +58,16 @@ impl BaseLeaf {
         self.node.key(i)
     }
 
+    fn key_ref(&self, i: usize) -> KeyRef {
+        self.node.key_ref(i)
+    }
+
     fn key_cell(&self, i: usize) -> (Key, &[u8], bool) {
         let (value, overflow) = self.node.value(i);
         (self.node.key(i), value, overflow)
     }
 
+    // TODO: change the name of this function to value
     fn cell(&self, i: usize) -> (&[u8], bool) {
         self.node.value(i)
     }
@@ -79,8 +77,23 @@ impl BaseLeaf {
 enum LeafOp {
     // Key, Value, Overflow
     Insert(Key, Vec<u8>, bool),
-    // From, To, Values size
-    KeepChunk(usize, usize, usize),
+    // From, To, Key lengths, Value sizes,
+    KeepChunk(KeepChunk),
+}
+
+#[derive(Debug, PartialEq)]
+struct KeepChunk {
+    start: usize,
+    end: usize,
+    // sum of all keys len in the chunk, including shared prefix
+    keys_len: usize,
+    values_len: usize,
+}
+
+impl KeepChunk {
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
 }
 
 pub enum DigestResult {
@@ -152,8 +165,9 @@ impl LeafUpdater {
         self.keep_up_to(Some(&key), with_deleted_overflow);
 
         if let Some(value) = value_change {
-            self.gauge.ingest(1, value.len());
-            self.ops.push(LeafOp::Insert(key, value, overflow));
+            let op = LeafOp::Insert(key, value, overflow);
+            self.gauge.ingest_op(self.base.as_ref(), &op);
+            self.ops.push(op);
         }
     }
 
@@ -183,7 +197,7 @@ impl LeafUpdater {
 
             Ok(DigestResult::Finished)
         } else if self.gauge.body_size() >= LEAF_MERGE_THRESHOLD || self.cutoff.is_none() {
-            let node = self.build_leaf(&self.ops);
+            let node = self.build_leaf(&self.ops, &self.gauge);
             let separator = self.separator();
 
             new_leaves.handle_new_leaf(separator, node, self.cutoff.clone())?;
@@ -213,10 +227,10 @@ impl LeafUpdater {
             return;
         };
 
-        let from = base.low;
-        let (found, to) = match up_to {
+        let start = base.low;
+        let (found, end) = match up_to {
             // Nothing more to do, the end has already been reached
-            None if from == base.node.n() => return,
+            None if start == base.node.n() => return,
             // Jump directly to the end of the base node and update `base.low` accordingly
             None => {
                 base.low = base.node.n();
@@ -229,17 +243,43 @@ impl LeafUpdater {
             },
         };
 
-        if from == to {
+        if start == end {
             // nothing to keep
             return;
         }
 
-        let values_size = base.node.values_size(from, to);
-        self.ops.push(LeafOp::KeepChunk(from, to, values_size));
-        self.gauge.ingest(to - from, values_size);
+        // TODO: maybe abstract into something similar to BranchTracker
+        let base_compressed_end = std::cmp::min(end, base.node.prefix_compressed() as usize);
+
+        if start != base_compressed_end {
+            let op = LeafOp::KeepChunk(KeepChunk {
+                start,
+                end: base_compressed_end,
+                keys_len: base.node.uncompressed_keys_len(start, base_compressed_end),
+                values_len: base.node.values_len(start, base_compressed_end),
+            });
+            self.gauge.ingest_op(Some(base), &op);
+            self.ops.push(op);
+
+            // Replace with Insert if prefix compression is stopped.
+            if self.gauge.prefix_compressed.is_some() {
+                let op_index = self.ops.len() - 1;
+                replace_with_insert(Some(base), &mut self.ops, op_index);
+            }
+        }
+
+        // Every kept uncompressed separator becomes an Insert operation.
+        for i in base_compressed_end..end {
+            let key = base.key(i);
+            let (value, overflow) = base.cell(i);
+
+            let op = LeafOp::Insert(key, value.to_vec(), overflow);
+            self.gauge.ingest_op(Some(base), &op);
+            self.ops.push(op);
+        }
 
         if found {
-            let (val, overflow) = base.cell(to);
+            let (val, overflow) = base.cell(end);
             if overflow {
                 with_deleted_overflow(val);
             }
@@ -253,7 +293,7 @@ impl LeafUpdater {
         target: usize,
     ) -> std::io::Result<()> {
         let mut start = 0;
-        while let Some(item_count) = self.consume_and_update_until(start, target) {
+        while let Some((item_count, gauge)) = self.consume_and_update_until(target) {
             let leaf_ops = &self.ops[start..][..item_count];
 
             let separator = if start == 0 {
@@ -262,7 +302,7 @@ impl LeafUpdater {
                 // UNWRAP: separator override is always set when more items follow after a split.
                 self.separator_override.take().unwrap()
             };
-            let new_node = self.build_leaf(leaf_ops);
+            let new_node = self.build_leaf(leaf_ops, &gauge);
 
             // set the separator override for the next
             if let Some(op) = self.ops.get(start + item_count) {
@@ -302,7 +342,7 @@ impl LeafUpdater {
     // construct a Leaf node with the specified target size.
     //
     // If reaching the target is not possible, then the gauge reflecting the last operations
-    // will be returned as an error.
+    // will be stored as the last updated gauge.
     //
     // The only scenario where the returned operations are associated to a body_size
     // below the target is when there is an item which causes the size to jump
@@ -314,29 +354,55 @@ impl LeafUpdater {
     //
     // This means that the half-full requirement will always be respected
     // because `LEAF_NODE_BODY_SIZE - MAX_LEAF_VALUE_SIZE > LEAF_MERGE_THRESHOLD`.
-    fn consume_and_update_until(&mut self, from: usize, target: usize) -> Option<usize> {
+    //
+    // TODO: change description
+    //
+    // SAFETY: This function is expected to be called in a loop until None is returned.
+    fn consume_and_update_until(&mut self, mut target: usize) -> Option<(usize, LeafGauge)> {
         assert!(target >= LEAF_MERGE_THRESHOLD);
-        let mut pos = from;
+        let mut pos = 0;
         let mut gauge = LeafGauge::default();
         let mut from_below_target_to_overfull = false;
 
         while pos < self.ops.len() && gauge.body_size() < target {
-            let (n_items, values_size) = match &self.ops[pos] {
-                LeafOp::Insert(_, val, _) => {
-                    if gauge.body_size_after(1, val.len()) > LEAF_NODE_BODY_SIZE {
-                        from_below_target_to_overfull = true;
-                        break;
+            match &self.ops[pos] {
+                LeafOp::Insert(key, val, _) => {
+                    if gauge.body_size_after(key, val.len()) > LEAF_NODE_BODY_SIZE {
+                        // Rare case: body was artifically small due to long shared prefix.
+
+                        // Change the target requirement to minimize the number of non
+                        // compressed separators saved into one node.
+                        target = LEAF_MERGE_THRESHOLD;
+
+                        if gauge.body_size() < LEAF_MERGE_THRESHOLD {
+                            // Start applying items without prefix compression. we assume items are less
+                            // than half the body size, so the item under pos should apply cleanly.
+                            gauge.stop_prefix_compression();
+
+                            if gauge.body_size_after(key, val.len()) > LEAF_NODE_BODY_SIZE {
+                                // Very special case where even after stopping prefix compression
+                                // an item still cause underflow to overflow
+                                // TODO: is this solution ok? Are we creating it anyway and thus having nodes
+                                // that do not fulfill the half full requirement?
+                                from_below_target_to_overfull = true;
+                                break;
+                            }
+                        } else {
+                            // The initial target was not reached, but BRANCH_MERGE_THRESHOLD was met. To avoid
+                            // inserting compressed separators, let's build the node with the operations collected until now.
+                            break;
+                        }
                     }
-                    (1, val.len())
                 }
-                LeafOp::KeepChunk(from, to, values_size) => {
-                    if gauge.body_size_after(to - from, *values_size) > target {
+                LeafOp::KeepChunk(chunk) => {
+                    // UNWRAP: KeepChunk is only created if base in Some.
+                    if gauge.body_size_after_chunk(self.base.as_ref().unwrap(), chunk) > target {
                         // Try to split the chunk to make it fit into the available space.
                         // `try_split_keep_chunk` works on the gauge thus it accounts for a possible
                         // stop of the prefix compression even if working on a KeepChunk operation
                         //
                         // UNWRAP: `KeepChunk` op only exists when base is Some.
-                        let (left_n_items, left_values_size) = try_split_keep_chunk(
+                        let left_n_items = try_split_keep_chunk(
                             self.base.as_ref().unwrap(),
                             &gauge,
                             &mut self.ops,
@@ -352,22 +418,25 @@ impl LeafUpdater {
                             self.extract_insert_from_keep_chunk(pos);
                             continue;
                         }
-                        (left_n_items, left_values_size)
-                    } else {
-                        (to - from, *values_size)
                     }
                 }
             };
 
-            gauge.ingest(n_items, values_size);
-            pos += 1;
+            gauge.ingest_op(self.base.as_ref(), &self.ops[pos]);
+            let n_ops = if gauge.prefix_compressed.is_some() {
+                // replace everything with Insert if the prefix compression was stopped
+                replace_with_insert(self.base.as_ref(), &mut self.ops, pos)
+            } else {
+                1
+            };
+            pos += n_ops;
         }
 
         // Use `pos - from` ops only if they create a node with a body size bigger than the target
         // or accept a size below the target only if an item causes the node to transition
         // from a body size below the target to overfull.
         if gauge.body_size() >= target || from_below_target_to_overfull {
-            Some(pos - from)
+            Some((pos, gauge))
         } else {
             self.gauge = gauge;
             None
@@ -375,83 +444,94 @@ impl LeafUpdater {
     }
 
     fn extract_insert_from_keep_chunk(&mut self, index: usize) {
-        let LeafOp::KeepChunk(from, to, values_size) = self.ops[index] else {
+        let LeafOp::KeepChunk(ref chunk) = self.ops[index] else {
             panic!("Attempted to extract `LeafOp::Insert` from non `LeafOp::KeepChunk` operation");
         };
 
         // UNWRAP: `KeepChunk` exists only if base is Some.
         let base = self.base.as_ref().unwrap();
-        let key = base.node.key(from);
-        let (value, overflow) = base.node.value(from);
+        let key = base.node.key(chunk.start);
+        let (value, overflow) = base.node.value(chunk.start);
+        let key_len = base.node.key_ref(chunk.start).len();
 
-        if from == to - 1 {
-            // 0-sized chunks are not allowed,
+        if chunk.len() == 1 {
+            // 1-sized chunks are not allowed,
             // thus 1-Sized chunks become just an `LeafOp::Insert`.
             self.ops[index] = LeafOp::Insert(key, value.to_vec(), overflow);
         } else {
-            self.ops[index] = LeafOp::KeepChunk(from + 1, to, values_size - value.len());
+            self.ops[index] = LeafOp::KeepChunk(KeepChunk {
+                start: chunk.start + 1,
+                end: chunk.end,
+                keys_len: chunk.keys_len - key_len,
+                values_len: chunk.values_len - value.len(),
+            });
+
             self.ops
                 .insert(index, LeafOp::Insert(key, value.to_vec(), overflow));
         }
     }
 
     fn prepare_merge_ops(&mut self) {
-        let Some(ref base) = self.base else { return };
-
-        // then replace `KeepChunk` ops with pure key-value ops, preparing for the base to be changed.
-        let mut new_insert = 0;
-        for i in 0..self.ops.len() {
-            match self.ops[new_insert + i] {
-                LeafOp::Insert(..) => (),
-                LeafOp::KeepChunk(from, to, ..) => {
-                    self.ops.remove(new_insert + i);
-
-                    for pos in (from..to).into_iter().rev() {
-                        let (k, v, o) = base.key_cell(pos);
-                        self.ops
-                            .insert(new_insert + i, LeafOp::Insert(k, v.to_vec(), o));
-                    }
-                    new_insert += to - from - 1;
-                }
-            }
+        let mut i = 0;
+        while i < self.ops.len() {
+            let replaced_ops = replace_with_insert(self.base.as_ref(), &mut self.ops, i);
+            i += replaced_ops;
         }
     }
 
-    // TODO: This may eventually return something like &Key if we can extract it from the BaseLeaf.
     fn op_first_key(&self, leaf_op: &LeafOp) -> Key {
         // UNWRAP: `KeepChunk` leaf ops only exist when base is `Some`.
         match leaf_op {
             LeafOp::Insert(k, _, _) => k.clone(),
-            LeafOp::KeepChunk(from, _, _) => self.base.as_ref().unwrap().key(*from),
+            LeafOp::KeepChunk(KeepChunk { start, .. }) => self.base.as_ref().unwrap().key(*start),
         }
     }
 
-    fn build_leaf(&self, ops: &[LeafOp]) -> LeafNode {
-        let (n_values, total_value_size) = ops
-            .iter()
-            .map(|op| match op {
-                LeafOp::Insert(_, v, _) => (1, v.len()),
-                LeafOp::KeepChunk(from, to, values_size) => (to - from, *values_size),
-            })
-            .fold((0, 0), |(acc_n, acc_size), (n, size)| {
-                (acc_n + n, acc_size + size)
-            });
-
-        let mut leaf_builder = LeafBuilder::new(&self.page_pool, n_values, total_value_size);
+    fn build_leaf(&self, ops: &[LeafOp], gauge: &LeafGauge) -> LeafNode {
+        let mut leaf_builder = LeafBuilder::new(
+            &self.page_pool,
+            gauge.n,
+            gauge.prefix_len,
+            gauge.prefix_compressed_items(),
+            gauge.compressed_keys_len(),
+            gauge.sum_values_len,
+        );
 
         for op in ops.into_iter() {
             match op {
                 LeafOp::Insert(k, v, o) => {
-                    // TODO: To avoid this clone, `leaf_op` must be moved here and not passed by reference.
-                    leaf_builder.push_cell(k.clone(), v, *o);
+                    leaf_builder.push(k, v, *o);
                 }
-                LeafOp::KeepChunk(from, to, _) => {
+                LeafOp::KeepChunk(chunk) => {
                     // UNWRAP: if the operation is a KeepChunk variant, then base must exist
-                    leaf_builder.push_chunk(&self.base.as_ref().unwrap().node, *from, *to)
+                    leaf_builder.push_chunk(
+                        &self.base.as_ref().unwrap().node,
+                        chunk.start,
+                        chunk.end,
+                    )
                 }
             }
         }
         leaf_builder.finish()
+    }
+}
+
+fn replace_with_insert(base: Option<&BaseLeaf>, ops: &mut Vec<LeafOp>, op_index: usize) -> usize {
+    match ops[op_index] {
+        LeafOp::Insert(_, _, _) => 1,
+        LeafOp::KeepChunk(KeepChunk { start, end, .. }) => {
+            ops.remove(op_index);
+
+            for pos in (start..end).into_iter().rev() {
+                // UNWRAP: TODO
+                let base = base.unwrap();
+                let key = base.key(pos);
+                let (value, overflow) = base.cell(pos);
+
+                ops.insert(op_index, LeafOp::Insert(key, value.to_vec(), overflow));
+            }
+            end - start
+        }
     }
 }
 
@@ -470,24 +550,41 @@ fn try_split_keep_chunk(
     index: usize,
     target: usize,
     limit: usize,
-) -> (usize, usize) {
-    let LeafOp::KeepChunk(from, to, values_size) = ops[index] else {
+) -> usize {
+    let LeafOp::KeepChunk(KeepChunk {
+        start,
+        end,
+        keys_len,
+        values_len,
+    }) = ops[index]
+    else {
         panic!("Attempted to split non `LeafOp::KeepChunk` operation");
     };
 
     let mut left_chunk_n_items = 0;
-    let mut left_chunk_values_size = 0;
-    for pos in from..to {
-        let size = base.cell(pos).0.len();
+    let mut left_chunk_values_len = 0;
+    let mut left_chunk_keys_len = 0;
 
-        left_chunk_values_size += size;
+    for pos in start..end {
+        let value_len = base.cell(pos).0.len();
+        let key_len = base.key_ref(pos).len();
+
         left_chunk_n_items += 1;
+        left_chunk_values_len += value_len;
+        left_chunk_keys_len += key_len;
 
-        let body_size_after = gauge.body_size_after(left_chunk_n_items, left_chunk_values_size);
+        let left_chunk = KeepChunk {
+            start: start,
+            end: pos,
+            keys_len: left_chunk_values_len,
+            values_len: left_chunk_keys_len,
+        };
+        let body_size_after = gauge.body_size_after_chunk(base, &left_chunk);
         if body_size_after >= target {
             // if an item jumps from below the target to bigger then the limit, do not use it
             if body_size_after > limit {
-                left_chunk_values_size -= size;
+                left_chunk_values_len -= value_len;
+                left_chunk_keys_len -= key_len;
                 left_chunk_n_items -= 1;
             }
             break;
@@ -496,40 +593,195 @@ fn try_split_keep_chunk(
 
     // there must be at least one element taken from the chunk,
     // and if all elements are taken then nothing needs to be changed
-    if left_chunk_n_items != 0 && to - from != left_chunk_n_items {
+    if left_chunk_n_items != 0 && end - start != left_chunk_n_items {
         ops.insert(
             index,
-            LeafOp::KeepChunk(from, from + left_chunk_n_items, left_chunk_values_size),
+            LeafOp::KeepChunk(KeepChunk {
+                start,
+                end: start + left_chunk_n_items,
+                keys_len: left_chunk_keys_len,
+                values_len: left_chunk_values_len,
+            }),
         );
 
-        ops[index + 1] = LeafOp::KeepChunk(
-            from + left_chunk_n_items,
-            to,
-            values_size - left_chunk_values_size,
-        );
+        ops[index + 1] = LeafOp::KeepChunk(KeepChunk {
+            start: start + left_chunk_n_items,
+            end,
+            keys_len: values_len - left_chunk_keys_len,
+            values_len: keys_len - left_chunk_values_len,
+        });
     }
 
-    (left_chunk_n_items, left_chunk_values_size)
+    left_chunk_values_len
 }
 
-#[derive(Default)]
 struct LeafGauge {
+    // first key, if any
+    first_key: Option<Key>,
+    prefix_len: usize,
+    // sum of all keys lengths (not including the first key).
+    sum_keys_length: usize,
+    // the number of items that are prefix compressed.`None` means everything will be compressed.
+    prefix_compressed: Option<usize>,
     n: usize,
-    value_size_sum: usize,
+    sum_values_len: usize,
+}
+
+impl Default for LeafGauge {
+    fn default() -> Self {
+        Self {
+            first_key: None,
+            prefix_len: 0,
+            prefix_compressed: None,
+            n: 0,
+            sum_keys_length: 0,
+            sum_values_len: 0,
+        }
+    }
 }
 
 impl LeafGauge {
-    fn ingest(&mut self, n: usize, values_size: usize) {
-        self.n += n;
-        self.value_size_sum += values_size;
+    fn ingest_op(&mut self, base: Option<&BaseLeaf>, op: &LeafOp) {
+        match op {
+            LeafOp::Insert(key, value, _) => self.ingest_item(key, value.len()),
+            // UNWRAP: `KeepChunk` op only exist when base is Some.
+            LeafOp::KeepChunk(keep_chunk) => self.ingest_chunk(base.unwrap(), keep_chunk),
+        }
     }
 
-    fn body_size_after(&self, n: usize, values_size: usize) -> usize {
-        leaf_node::body_size(self.n + n, self.value_size_sum + values_size)
+    fn ingest_item(&mut self, key: &Key, value_size: usize) {
+        let Some(ref first) = self.first_key else {
+            self.prefix_len = key.len();
+            self.first_key = Some(key.clone());
+
+            self.n = 1;
+            self.sum_values_len = value_size;
+            return;
+        };
+
+        if self.prefix_compressed.is_none() {
+            self.prefix_len = byte_prefix_len(first, key);
+        }
+
+        self.sum_keys_length += key.len();
+
+        self.n += 1;
+        self.sum_values_len += value_size;
+    }
+
+    fn ingest_chunk(&mut self, base: &BaseLeaf, chunk: &KeepChunk) {
+        if let Some(ref first) = self.first_key {
+            if self.prefix_compressed.is_none() {
+                // We are only checking the prefix len with the last element in the chunk because
+                // chunks are extracted only from compressd keys, thus we can check only with the last one to
+                // extract the shared prefix with the all chunk
+                let chunk_last_key = base.key(chunk.end - 1);
+                self.prefix_len = byte_prefix_len(first, &chunk_last_key);
+            }
+            self.sum_values_len += chunk.values_len;
+            self.n += chunk.len();
+        } else {
+            let chunk_first_key = base.key(chunk.start);
+            let chunk_last_key = base.key(chunk.end - 1);
+
+            self.prefix_len = byte_prefix_len(&chunk_first_key, &chunk_last_key);
+            let first_key_len = chunk_first_key.len();
+            self.first_key = Some(chunk_first_key);
+            self.sum_keys_length = chunk.keys_len - first_key_len;
+            self.sum_values_len = chunk.values_len;
+            self.n = chunk.len();
+        };
+    }
+
+    pub fn stop_prefix_compression(&mut self) {
+        assert!(self.prefix_compressed.is_none());
+        self.prefix_compressed = Some(self.n);
+    }
+
+    fn prefix_compressed_items(&self) -> usize {
+        self.prefix_compressed.unwrap_or(self.n)
+    }
+
+    fn body_size_after(&self, key: &Key, value_len: usize) -> usize {
+        let p;
+        let k;
+        if let Some(ref first) = self.first_key {
+            if self.prefix_compressed.is_none() {
+                p = byte_prefix_len(first, key);
+            } else {
+                p = self.prefix_len;
+            }
+            k = leaf_node::compressed_key_range_size(
+                first.len(),
+                self.prefix_compressed.unwrap_or(self.n + 1),
+                self.sum_keys_length + key.len(),
+                p,
+            );
+        } else {
+            k = 0;
+            p = key.len();
+        }
+
+        leaf_node::body_size(p, self.n + 1, k, self.sum_values_len + value_len)
+    }
+
+    fn body_size_after_chunk(&self, base: &BaseLeaf, chunk: &KeepChunk) -> usize {
+        let p;
+        let k;
+        if let Some(ref first) = self.first_key {
+            if self.prefix_compressed.is_none() {
+                let chunk_last_key = base.key(chunk.end - 1);
+                p = byte_prefix_len(first, &chunk_last_key);
+            } else {
+                p = self.prefix_len;
+            }
+            k = leaf_node::compressed_key_range_size(
+                first.len(),
+                self.prefix_compressed.unwrap_or(self.n + chunk.len()),
+                self.sum_keys_length + chunk.keys_len,
+                p,
+            );
+        } else {
+            let chunk_first_key = base.key(chunk.start);
+            let chunk_last_key = base.key(chunk.end - 1);
+            let first_len = chunk_first_key.len();
+
+            p = byte_prefix_len(&chunk_first_key, &chunk_last_key);
+            k = leaf_node::compressed_key_range_size(
+                first_len,
+                self.n + chunk.len(),
+                chunk.keys_len - first_len,
+                p,
+            );
+        };
+
+        leaf_node::body_size(
+            p,
+            self.n + chunk.len(),
+            k,
+            self.sum_values_len + chunk.values_len,
+        )
+    }
+
+    fn compressed_keys_len(&self) -> usize {
+        match self.first_key {
+            Some(ref first) => leaf_node::compressed_key_range_size(
+                first.len(),
+                self.prefix_compressed.unwrap_or(self.n),
+                self.sum_keys_length,
+                self.prefix_len,
+            ),
+            None => 0,
+        }
     }
 
     fn body_size(&self) -> usize {
-        leaf_node::body_size(self.n, self.value_size_sum)
+        leaf_node::body_size(
+            self.prefix_len,
+            self.n,
+            self.compressed_keys_len(),
+            self.sum_values_len,
+        )
     }
 }
 
@@ -960,7 +1212,7 @@ mod tests {
 
         let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
-        let leaf_body_size = body_size(leaf_1.n(), leaf_1.values_size(0, leaf_1.n()));
+        let leaf_body_size = body_size(leaf_1.n(), leaf_1.values_len(0, leaf_1.n()));
         assert!(leaf_body_size < midpoint);
         let leaf_2 = &new_leaves.inner.get(&separate(&key(3), &key(4))).unwrap().0;
         assert_eq!(leaf_2.n(), 3);
@@ -1006,7 +1258,7 @@ mod tests {
         // A leaf is perfectly created.
         let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
-        let leaf_body_size = body_size(3, leaf_1.values_size(0, 3));
+        let leaf_body_size = body_size(3, leaf_1.values_len(0, 3));
         assert!(leaf_body_size > midpoint);
 
         // There is no second created leaf because the remaining ops
@@ -1062,9 +1314,9 @@ mod tests {
             None,
         );
         updater.ops = vec![
-            LeafOp::KeepChunk(0, 1, leaf.values_size(0, 1)),
-            LeafOp::KeepChunk(1, 2, leaf.values_size(1, 2)),
-            LeafOp::KeepChunk(2, 4, leaf.values_size(2, 4)),
+            LeafOp::KeepChunk(0, 1, leaf.values_len(0, 1)),
+            LeafOp::KeepChunk(1, 2, leaf.values_len(1, 2)),
+            LeafOp::KeepChunk(2, 4, leaf.values_len(2, 4)),
         ];
 
         // one split exptected
@@ -1092,7 +1344,7 @@ mod tests {
         updater.ops = vec![
             LeafOp::Insert(key(1), vec![1; 1100], false),
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2)),
+            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
             LeafOp::Insert(key(5), vec![1; 900], false),
             LeafOp::Insert(key(6), vec![1; 1300], false),
         ];
@@ -1123,7 +1375,7 @@ mod tests {
         };
 
         // standard split
-        let mut ops = vec![LeafOp::KeepChunk(0, 4, leaf.values_size(0, 4))];
+        let mut ops = vec![LeafOp::KeepChunk(0, 4, leaf.values_len(0, 4))];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1136,7 +1388,7 @@ mod tests {
         assert!(matches!(ops[0], LeafOp::KeepChunk(_,_ , size) if size > 2200));
 
         // Perform a split which is not able to reach the target
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1150,7 +1402,7 @@ mod tests {
 
         // Perform a split with a target too little,
         // but something smaller than the limit will still be split.
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1164,10 +1416,10 @@ mod tests {
 
         // Perform a split with a limit too little,
         // nothing will still be split.
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
         super::try_split_keep_chunk(&base, &LeafGauge::default(), &mut ops, 0, 500, 500);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], LeafOp::KeepChunk(0,2 , size) if size == leaf.values_size(0, 2)));
+        assert!(matches!(ops[0], LeafOp::KeepChunk(0,2 , size) if size == leaf.values_len(0, 2)));
     }
 
     #[test]
@@ -1191,8 +1443,8 @@ mod tests {
         updater.ops = vec![
             LeafOp::Insert(key(1), vec![1; 1100], false),
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2)),
-            LeafOp::KeepChunk(2, 4, leaf.values_size(2, 4)),
+            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
+            LeafOp::KeepChunk(2, 4, leaf.values_len(2, 4)),
             LeafOp::Insert(key(5), vec![1; 900], false),
             LeafOp::Insert(key(6), vec![1; 1300], false),
         ];
@@ -1221,7 +1473,7 @@ mod tests {
         );
         updater.ops = vec![
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_size(0, 2)),
+            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
             LeafOp::Insert(key(5), vec![1; 1100], false),
         ];
 
