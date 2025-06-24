@@ -19,11 +19,6 @@ pub fn separate(a: &Key, b: &Key) -> Key {
         separator[full_bytes] = b[full_bytes] & mask;
     }
 
-    // TODO: Variable-length keys are not effectively supported yet, so extend the key
-    // to 32 bytes to ensure it works like fixed-length keys.
-    let missing_bytes = 32 - separator.len();
-    separator.extend(std::iter::repeat_n(0, missing_bytes));
-
     separator
 }
 
@@ -52,15 +47,6 @@ pub fn byte_prefix_len(key_a: &Key, key_b: &Key) -> usize {
 }
 
 pub fn separator_len(key: &Key) -> usize {
-    if key.len() != 32 {
-        todo!("separator_len must be updated")
-    }
-
-    // TODO: this will no longer be supported with var-len keys
-    if &key[..] == &[0u8; 32] {
-        return 1;
-    }
-
     let mut trailing_zeros = 0;
     'byte_offset: for byte in (0..key.len()).rev() {
         for bit in (0..8).rev() {
@@ -72,7 +58,10 @@ pub fn separator_len(key: &Key) -> usize {
         }
     }
 
-    (key.len() * 8) - trailing_zeros
+    match (key.len() * 8) - trailing_zeros {
+        separator_len if separator_len == 0 => 1,
+        separator_len => separator_len,
+    }
 }
 
 // Reconstruct a key starting from a prefix and a misaligned separator.
@@ -445,8 +434,7 @@ mod tests {
     fn reference_separate(a: &Key, b: &Key) -> Key {
         let len = reference_prefix_len(a, b) + 1;
 
-        // TODO: update with `vec![0; (len + 7) / 8]` once we var len keys are fully accepted
-        let mut separator = vec![0; 32];
+        let mut separator = vec![0; (len + 7) / 8];
         separator.view_bits_mut::<Msb0>()[..len].copy_from_bitslice(&b.view_bits::<Msb0>()[..len]);
         separator
     }
@@ -643,17 +631,13 @@ mod tests {
 
     #[test]
     fn separator_len() {
-        for separator_bit_len in 0..257 {
+        for separator_bit_len in 1..257 {
             let mut a = vec![255; 32];
             if separator_bit_len != 257 {
                 a.view_bits_mut::<Msb0>()[separator_bit_len..].fill(false);
             }
 
-            let expected_res = if a == vec![0u8; 32] {
-                1
-            } else {
-                256 - a.view_bits::<Msb0>().trailing_zeros()
-            };
+            let expected_res = 256 - a.view_bits::<Msb0>().trailing_zeros();
             let res = super::separator_len(&a);
 
             assert_eq!(expected_res, res);

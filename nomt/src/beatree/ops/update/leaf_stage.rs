@@ -226,14 +226,9 @@ pub fn enforce_first_leaf_separator(
     leaf_changeset: &mut Vec<(Key, Option<PageNumber>)>,
     bbn_index: &Index,
 ) {
-    // TODO: remove once var len keys are actually used
-    for (key, _) in leaf_changeset.iter().by_ref() {
-        assert_eq!(key.len(), 32);
-    }
-
     // Check if the first changed leaf corresponds to the deletion of the first leaf.
     match leaf_changeset.first() {
-        Some((first_key, None)) if *first_key == [0; 32] => (),
+        Some((first_key, None)) if *first_key == [0] => (),
         _ => return,
     };
 
@@ -244,8 +239,7 @@ pub fn enforce_first_leaf_separator(
     // Initially set `maybe_new_first` to be the second leaf in the previous state.
     // It is an option because there may have been only one leaf in the previous state.
     // `maybe_new_first` always refers to leaves that were present previously.
-    // TODO: once var len keys are fully supported this will need to become vec![0]
-    let mut separator = vec![0; 32];
+    let mut separator = vec![0];
     let mut maybe_new_first: Option<(Key, PageNumber)>;
 
     // Iterate over `leaf_changeset` until a non deleted item with a separator

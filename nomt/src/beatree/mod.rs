@@ -38,6 +38,10 @@ pub mod benches;
 #[cfg(feature = "fuzz")]
 pub use ops::bit_ops::*;
 
+// TODO: remove this re-export
+#[cfg(test)]
+pub use ops::make_leaf;
+
 pub type Key = Vec<u8>;
 
 #[derive(Clone)]
