@@ -114,10 +114,11 @@ impl BranchNode {
     }
 
     // Set the prefix extracting `self.prefix_len` bits from the provided key
-    fn set_prefix(&mut self, key: &Vec<u8>) {
+    fn set_prefix(&mut self, mut key: Vec<u8>) {
         let start = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
         let prefix_len = self.prefix_len() as usize;
         let end = start + ((prefix_len + 7) / 8).next_multiple_of(8);
+        key.extend(std::iter::repeat(0).take(key.len().next_multiple_of(8)));
         bitwise_memcpy(&mut self.as_mut_slice()[start..end], 0, &key, 0, prefix_len);
     }
 
@@ -415,12 +416,7 @@ pub fn get_key(node: &BranchNode, index: usize) -> Key {
         None
     };
 
-    // TODO: Variable-length keys are not effectively supported yet, so extend the key
-    // to 32 bytes to ensure it works like fixed-length keys.
-    let mut key = reconstruct_key(prefix, node.raw_separator(index));
-    let missing_bytes = 32 - key.len();
-    key.extend(std::iter::repeat_n(0, missing_bytes));
-    key
+    reconstruct_key(prefix, node.raw_separator(index))
 }
 
 pub struct BranchNodeBuilder {
@@ -460,7 +456,7 @@ impl BranchNodeBuilder {
         assert!(self.index < self.branch.n() as usize);
 
         if self.index == 0 {
-            self.branch.set_prefix(&key);
+            self.branch.set_prefix(key.clone());
         }
 
         let separator = if self.index < self.prefix_compressed {
@@ -503,7 +499,7 @@ impl BranchNodeBuilder {
         if self.index == 0 {
             // set the prefix if this is the first inserted item
             let key = get_key(base, from);
-            self.branch.set_prefix(&key);
+            self.branch.set_prefix(key.clone());
         }
 
         let bit_prefix_len_difference =
@@ -702,7 +698,7 @@ mod test {
 
     #[test]
     fn push_chunk() {
-        let mut keys = vec![vec![0u8; 32]; 10];
+        let mut keys = vec![vec![0; 3]; 10];
         for (i, key) in keys.iter_mut().enumerate() {
             key[0] = 0x11;
             if i != 0 {
@@ -734,7 +730,7 @@ mod test {
             9, /*prefix_len*/
         );
         builder.push_chunk(&base_branch, 1, 4, [].into_iter());
-        let mut key255 = vec![0; 32];
+        let mut key255 = vec![0; 3];
         key255[0] = 0x11;
         key255[1] = 255;
         key255[2] = 255;

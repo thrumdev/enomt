@@ -26,6 +26,9 @@ mod leaf_updater;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub use leaf_updater::tests::make_leaf;
+
 // All nodes less than this body size will be merged with a neighboring node.
 const BRANCH_MERGE_THRESHOLD: usize = BRANCH_NODE_BODY_SIZE / 2;
 
