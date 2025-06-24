@@ -435,8 +435,7 @@ impl RequestState {
 
 fn range_bounds(raw_path: KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
     if depth == 0 {
-        // TODO: once var-len keys are fully supported the first item in separator will become vec![0]
-        return (vec![0; 32], None);
+        return (vec![0], None);
     }
     let start = raw_path;
     let mut end = start.clone();
@@ -910,8 +909,7 @@ mod tests {
     #[test]
     fn key_range() {
         fn make_path(path: BitVec<u8, Msb0>) -> KeyPath {
-            // TODO: update with `KeyPath::default()` once we var-len keys are fully accepted
-            let mut k = vec![0; 32];
+            let mut k = vec![0];
             k.view_bits_mut::<Msb0>()[..path.len()].copy_from_bitslice(&path);
             k
         }
