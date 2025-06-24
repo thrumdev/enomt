@@ -32,6 +32,8 @@ impl BaseBranch {
     // If there are available keys in the node, then it returns the index
     // of the specified key with the boolean set to true or the index containing
     // the first key bigger than the one specified and the boolean set to false.
+    // If the biggest key in the leaf is being searched, the total length
+    // of the elements will be returned as the index, along with the flag set to false.
     fn find_key(&mut self, key: &Key) -> Option<(bool, usize)> {
         if self.low == self.node.n() as usize {
             return None;
@@ -43,9 +45,6 @@ impl BaseBranch {
             // the key was present return its index and point to the right after key
             self.low = pos + 1;
             return Some((true, pos));
-        } else if pos == self.low {
-            // there are no keys left bigger than the specified one
-            return None;
         } else {
             // key was not present, return and point to the smallest bigger key
             self.low = pos;

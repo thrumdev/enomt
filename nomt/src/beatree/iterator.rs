@@ -14,6 +14,7 @@ use super::{
     branch::node::{get_key, BranchNode},
     index::Index,
     leaf::node::LeafNode,
+    ops::{leaf_find_key_pos, search_leaf},
     Key, LeafNodeRef, ValueChange,
 };
 
@@ -360,17 +361,10 @@ impl LeafIterator {
     fn provide_leaf(&mut self, leaf: Arc<LeafNode>) {
         // If this is the first leaf requested, we need to skip all the items that are less than
         // the iterator's range.
-        let index = self.start.take().map_or(0, |start| {
-            let cell_pointers = leaf.cell_pointers();
-            let res = cell_pointers.binary_search_by(|cell_pointer| {
-                // TODO: update based on the new leaf encoding
-                //let k = super::leaf::node::extract_key(cell_pointer);
-                //k.cmp(&start)
-                todo!()
-            });
-
-            res.unwrap_or_else(|i| i)
-        });
+        let index = self
+            .start
+            .take()
+            .map_or(0, |start| leaf_find_key_pos(&leaf, &start, None).1);
 
         let prev_state = std::mem::replace(&mut self.state, LeafIteratorState::Done { last: None });
         let LeafIteratorState::Blocked {
@@ -587,15 +581,15 @@ impl OrdMapOwnedIter {
 #[cfg(test)]
 mod tests {
     use super::IterOutput;
-    use crate::beatree::{self as beatree, BeatreeIterator};
-    use crate::io::PagePool;
-    use beatree::{
+    use crate::beatree::{
         branch::{node::get_key, BranchNode, BranchNodeBuilder},
         index::Index,
         leaf::node::{LeafBuilder, LeafNode},
+        make_leaf,
         ops::bit_ops,
-        Key, LeafNodeRef, PageNumber, ValueChange,
+        BeatreeIterator, Key, LeafNodeRef, PageNumber, ValueChange,
     };
+    use crate::io::PagePool;
 
     use imbl::OrdMap;
     use std::sync::Arc;
@@ -613,15 +607,16 @@ mod tests {
     }
 
     fn build_leaf(values: Vec<(Key, u64)>) -> (Key, Arc<LeafNode>) {
-        let n = values.len();
-        let total_value_size = n * 8;
-        let mut builder = LeafBuilder::new(&PAGE_POOL, n, total_value_size);
         let separator = values[0].0.clone();
-        for (key, value) in values {
-            builder.push_cell(key, &encode_value(value), false);
-        }
 
-        (separator, Arc::new(builder.finish()))
+        let key_value_pairs: Vec<_> = values
+            .into_iter()
+            .map(|(key, v)| (key, encode_value(v), false))
+            .collect();
+
+        let leaf = make_leaf(key_value_pairs);
+
+        (separator, leaf)
     }
 
     fn build_branch(leaves: Vec<(Key, PageNumber)>) -> Arc<BranchNode> {

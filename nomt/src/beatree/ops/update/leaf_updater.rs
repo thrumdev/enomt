@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::beatree::{
-    leaf::node::{self as leaf_node, KeyRef, LeafBuilder, LeafNode, LEAF_NODE_BODY_SIZE},
+    leaf::node::{self as leaf_node, LeafBuilder, LeafNode, LEAF_NODE_BODY_SIZE},
     ops::{
         bit_ops::{byte_prefix_len, separate},
-        overflow,
+        leaf_find_key_pos, overflow,
     },
     Key,
 };
@@ -32,21 +32,19 @@ impl BaseLeaf {
     // If there are available keys in the node, then it returns the index
     // of the specified key with the boolean set to true or the index containing
     // the first key bigger than the one specified and the boolean set to false.
+    // If the biggest key in the leaf is being searched, the total length
+    // of the elements will be returned as the index, along with the flag set to false.
     fn find_key(&mut self, key: &Key) -> Option<(bool, usize)> {
         if self.low == self.node.n() {
             return None;
         }
 
-        let (found, pos) = self.node.find_key_pos(key, Some(self.low));
+        let (found, pos) = leaf_find_key_pos(&self.node, key, Some(self.low));
 
         if found {
             // the key was present return its index and point to the right after key
             self.low = pos + 1;
             return Some((true, pos));
-        } else if pos == self.low {
-            // TODO: still not sure about the correctness of this branch
-            // there are no keys left bigger than the specified one
-            return None;
         } else {
             // key was not present, return and point to the smallest bigger key
             self.low = pos;
@@ -58,21 +56,21 @@ impl BaseLeaf {
         self.node.key(i)
     }
 
-    fn key_ref(&self, i: usize) -> KeyRef {
-        self.node.key_ref(i)
+    fn key_len(&self, i: usize) -> usize {
+        self.node.key_len(i)
     }
 
-    fn key_cell(&self, i: usize) -> (Key, &[u8], bool) {
-        let (value, overflow) = self.node.value(i);
-        (self.node.key(i), value, overflow)
-    }
-
-    // TODO: change the name of this function to value
-    fn cell(&self, i: usize) -> (&[u8], bool) {
+    fn value(&self, i: usize) -> (&[u8], bool) {
         self.node.value(i)
+    }
+
+    fn value_len(&self, i: usize) -> usize {
+        self.node.value_len(i)
     }
 }
 
+// TODO: A variant could be introduced when a value is updated but not its key,
+// similar to what is done in the branch node.
 #[derive(Debug, PartialEq)]
 enum LeafOp {
     // Key, Value, Overflow
@@ -230,16 +228,20 @@ impl LeafUpdater {
         let start = base.low;
         let (found, end) = match up_to {
             // Nothing more to do, the end has already been reached
-            None if start == base.node.n() => return,
+            None if start == base.node.n() => {
+                return;
+            }
             // Jump directly to the end of the base node and update `base.low` accordingly
             None => {
                 base.low = base.node.n();
                 (false, base.node.n())
             }
             Some(up_to) => match base.find_key(up_to) {
-                Some(res) => res,
+                Some((found, pos)) => (found, pos),
                 // already at the end
-                None => return,
+                None => {
+                    return;
+                }
             },
         };
 
@@ -271,7 +273,7 @@ impl LeafUpdater {
         // Every kept uncompressed separator becomes an Insert operation.
         for i in base_compressed_end..end {
             let key = base.key(i);
-            let (value, overflow) = base.cell(i);
+            let (value, overflow) = base.value(i);
 
             let op = LeafOp::Insert(key, value.to_vec(), overflow);
             self.gauge.ingest_op(Some(base), &op);
@@ -279,7 +281,7 @@ impl LeafUpdater {
         }
 
         if found {
-            let (val, overflow) = base.cell(end);
+            let (val, overflow) = base.value(end);
             if overflow {
                 with_deleted_overflow(val);
             }
@@ -293,8 +295,8 @@ impl LeafUpdater {
         target: usize,
     ) -> std::io::Result<()> {
         let mut start = 0;
-        while let Some((item_count, gauge)) = self.consume_and_update_until(target) {
-            let leaf_ops = &self.ops[start..][..item_count];
+        while let Some((item_count, gauge)) = self.consume_and_update_until(start, target) {
+            let leaf_ops = &self.ops[start..start + item_count];
 
             let separator = if start == 0 {
                 self.separator()
@@ -333,8 +335,7 @@ impl LeafUpdater {
             .as_ref()
             .or(self.base.as_ref().map(|b| &b.separator))
             .cloned()
-            // TODO: this will become a vec![0] once var len keys are fully supported
-            .unwrap_or(vec![0; 32])
+            .unwrap_or(vec![0])
     }
 
     // Starting from the specified index `from` within `self.ops`, consume and possibly
@@ -358,9 +359,13 @@ impl LeafUpdater {
     // TODO: change description
     //
     // SAFETY: This function is expected to be called in a loop until None is returned.
-    fn consume_and_update_until(&mut self, mut target: usize) -> Option<(usize, LeafGauge)> {
+    fn consume_and_update_until(
+        &mut self,
+        ops_start: usize,
+        mut target: usize,
+    ) -> Option<(usize, LeafGauge)> {
         assert!(target >= LEAF_MERGE_THRESHOLD);
-        let mut pos = 0;
+        let mut pos = ops_start;
         let mut gauge = LeafGauge::default();
         let mut from_below_target_to_overfull = false;
 
@@ -436,7 +441,7 @@ impl LeafUpdater {
         // or accept a size below the target only if an item causes the node to transition
         // from a body size below the target to overfull.
         if gauge.body_size() >= target || from_below_target_to_overfull {
-            Some((pos, gauge))
+            Some((pos - ops_start, gauge))
         } else {
             self.gauge = gauge;
             None
@@ -452,7 +457,7 @@ impl LeafUpdater {
         let base = self.base.as_ref().unwrap();
         let key = base.node.key(chunk.start);
         let (value, overflow) = base.node.value(chunk.start);
-        let key_len = base.node.key_ref(chunk.start).len();
+        let key_len = base.node.key_len(chunk.start);
 
         if chunk.len() == 1 {
             // 1-sized chunks are not allowed,
@@ -523,10 +528,10 @@ fn replace_with_insert(base: Option<&BaseLeaf>, ops: &mut Vec<LeafOp>, op_index:
             ops.remove(op_index);
 
             for pos in (start..end).into_iter().rev() {
-                // UNWRAP: TODO
+                // UNWRAP: `KeepChunk` op only exist when base is Some.
                 let base = base.unwrap();
                 let key = base.key(pos);
-                let (value, overflow) = base.cell(pos);
+                let (value, overflow) = base.value(pos);
 
                 ops.insert(op_index, LeafOp::Insert(key, value.to_vec(), overflow));
             }
@@ -564,31 +569,31 @@ fn try_split_keep_chunk(
     let mut left_chunk_n_items = 0;
     let mut left_chunk_values_len = 0;
     let mut left_chunk_keys_len = 0;
+    let mut gauge = gauge.clone();
 
     for pos in start..end {
-        let value_len = base.cell(pos).0.len();
-        let key_len = base.key_ref(pos).len();
+        let value_len = base.value_len(pos);
+        let key = base.key(pos);
 
         left_chunk_n_items += 1;
         left_chunk_values_len += value_len;
-        left_chunk_keys_len += key_len;
+        left_chunk_keys_len += key.len();
 
-        let left_chunk = KeepChunk {
-            start: start,
-            end: pos,
-            keys_len: left_chunk_values_len,
-            values_len: left_chunk_keys_len,
-        };
-        let body_size_after = gauge.body_size_after_chunk(base, &left_chunk);
+        let body_size_after = gauge.body_size_after(&key, value_len);
+
         if body_size_after >= target {
             // if an item jumps from below the target to bigger then the limit, do not use it
             if body_size_after > limit {
                 left_chunk_values_len -= value_len;
-                left_chunk_keys_len -= key_len;
+                left_chunk_keys_len -= key.len();
                 left_chunk_n_items -= 1;
+            } else {
+                gauge.ingest_item(&key, value_len);
             }
             break;
         }
+
+        gauge.ingest_item(&key, value_len);
     }
 
     // there must be at least one element taken from the chunk,
@@ -607,20 +612,21 @@ fn try_split_keep_chunk(
         ops[index + 1] = LeafOp::KeepChunk(KeepChunk {
             start: start + left_chunk_n_items,
             end,
-            keys_len: values_len - left_chunk_keys_len,
-            values_len: keys_len - left_chunk_values_len,
+            keys_len: keys_len - left_chunk_keys_len,
+            values_len: values_len - left_chunk_values_len,
         });
     }
 
     left_chunk_values_len
 }
 
+#[derive(Clone)]
 struct LeafGauge {
     // first key, if any
     first_key: Option<Key>,
     prefix_len: usize,
     // sum of all keys lengths (not including the first key).
-    sum_keys_length: usize,
+    sum_keys_len: usize,
     // the number of items that are prefix compressed.`None` means everything will be compressed.
     prefix_compressed: Option<usize>,
     n: usize,
@@ -634,7 +640,7 @@ impl Default for LeafGauge {
             prefix_len: 0,
             prefix_compressed: None,
             n: 0,
-            sum_keys_length: 0,
+            sum_keys_len: 0,
             sum_values_len: 0,
         }
     }
@@ -663,7 +669,7 @@ impl LeafGauge {
             self.prefix_len = byte_prefix_len(first, key);
         }
 
-        self.sum_keys_length += key.len();
+        self.sum_keys_len += key.len();
 
         self.n += 1;
         self.sum_values_len += value_size;
@@ -679,6 +685,7 @@ impl LeafGauge {
                 self.prefix_len = byte_prefix_len(first, &chunk_last_key);
             }
             self.sum_values_len += chunk.values_len;
+            self.sum_keys_len += chunk.keys_len;
             self.n += chunk.len();
         } else {
             let chunk_first_key = base.key(chunk.start);
@@ -687,7 +694,7 @@ impl LeafGauge {
             self.prefix_len = byte_prefix_len(&chunk_first_key, &chunk_last_key);
             let first_key_len = chunk_first_key.len();
             self.first_key = Some(chunk_first_key);
-            self.sum_keys_length = chunk.keys_len - first_key_len;
+            self.sum_keys_len = chunk.keys_len - first_key_len;
             self.sum_values_len = chunk.values_len;
             self.n = chunk.len();
         };
@@ -714,7 +721,7 @@ impl LeafGauge {
             k = leaf_node::compressed_key_range_size(
                 first.len(),
                 self.prefix_compressed.unwrap_or(self.n + 1),
-                self.sum_keys_length + key.len(),
+                self.sum_keys_len + key.len(),
                 p,
             );
         } else {
@@ -738,7 +745,7 @@ impl LeafGauge {
             k = leaf_node::compressed_key_range_size(
                 first.len(),
                 self.prefix_compressed.unwrap_or(self.n + chunk.len()),
-                self.sum_keys_length + chunk.keys_len,
+                self.sum_keys_len + chunk.keys_len,
                 p,
             );
         } else {
@@ -768,7 +775,7 @@ impl LeafGauge {
             Some(ref first) => leaf_node::compressed_key_range_size(
                 first.len(),
                 self.prefix_compressed.unwrap_or(self.n),
-                self.sum_keys_length,
+                self.sum_keys_len,
                 self.prefix_len,
             ),
             None => 0,
@@ -786,16 +793,19 @@ impl LeafGauge {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::beatree::{
         branch::BRANCH_NODE_SIZE,
         leaf::node::{body_size, MAX_LEAF_VALUE_SIZE},
-        ops::update::{leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD},
+        ops::{
+            search_leaf,
+            update::{leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD},
+        },
     };
 
     use super::{
-        separate, BaseLeaf, DigestResult, HandleNewLeaf, Key, LeafBuilder, LeafNode, LeafOp,
-        LeafUpdater, PagePool,
+        separate, BaseLeaf, DigestResult, HandleNewLeaf, KeepChunk, Key, LeafBuilder, LeafNode,
+        LeafOp, LeafUpdater, PagePool,
     };
     use std::{collections::HashMap, sync::Arc};
 
@@ -824,16 +834,52 @@ mod tests {
         vec![x; 32]
     }
 
-    fn make_leaf(vs: Vec<(Key, Vec<u8>, bool)>) -> Arc<LeafNode> {
-        let n = vs.len();
-        let total_value_size = vs.iter().map(|(_, v, _)| v.len()).sum();
+    pub fn make_leaf(vs: Vec<(Key, Vec<u8>, bool)>) -> Arc<LeafNode> {
+        let mut gauge = LeafGauge::default();
 
-        let mut builder = LeafBuilder::new(&PAGE_POOL, n, total_value_size);
+        for (key, value, _) in vs.iter().by_ref() {
+            gauge.ingest_item(&key, value.len());
+        }
+
+        let mut builder = LeafBuilder::new(
+            &PAGE_POOL,
+            gauge.n,
+            gauge.prefix_len,
+            gauge.prefix_compressed_items(),
+            gauge.compressed_keys_len(),
+            gauge.sum_values_len,
+        );
+
         for (k, v, overflow) in vs {
-            builder.push_cell(k, &v, overflow);
+            builder.push(&k, &v, overflow);
         }
 
         Arc::new(builder.finish())
+    }
+
+    #[test]
+    fn build_leaf() {
+        let var_len_key = |i: u8, n| vec![i; n];
+        let key_values = vec![
+            (var_len_key(1, 3), vec![1u8; 126]),
+            (var_len_key(3, 10), vec![1u8; 78]),
+            (var_len_key(5, 200), vec![1u8; 50]),
+            (var_len_key(7, 57), vec![1u8; 34]),
+            (var_len_key(9, 85), vec![1u8; 507]),
+        ];
+
+        let leaf = make_leaf(
+            key_values
+                .clone()
+                .into_iter()
+                .map(|(k, v)| (k, v, false))
+                .collect(),
+        );
+
+        for (i, (k, v)) in key_values.iter().enumerate() {
+            assert_eq!(&leaf.key(i), k);
+            assert_eq!(leaf.value(i).0, v);
+        }
     }
 
     #[test]
@@ -847,11 +893,12 @@ mod tests {
         ]);
 
         let mut base = BaseLeaf {
-            node: leaf,
+            node: leaf.clone(),
             low: 0,
             separator: key(1),
         };
 
+        //assert_eq!(base.find_key(&key(0)), None);
         assert_eq!(base.find_key(&key(0)), Some((false, 0)));
         assert_eq!(base.find_key(&key(1)), Some((true, 0)));
         assert_eq!(base.find_key(&key(2)), Some((false, 1)));
@@ -863,6 +910,13 @@ mod tests {
         assert_eq!(base.find_key(&key(8)), Some((false, 4)));
         assert_eq!(base.find_key(&key(9)), Some((true, 4)));
         assert_eq!(base.find_key(&key(10)), None);
+
+        let mut base = BaseLeaf {
+            node: leaf,
+            low: 0,
+            separator: key(1),
+        };
+        assert_eq!(base.find_key(&key(10)), Some((false, 5)));
     }
 
     #[test]
@@ -904,10 +958,11 @@ mod tests {
         let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
 
         let new_leaf = &new_leaf_entry.0;
+
         assert_eq!(new_leaf.n(), 3);
-        assert_eq!(new_leaf.get(&key(1)).unwrap().0, &[1u8; 1000]);
-        assert_eq!(new_leaf.get(&key(2)).unwrap().0, &[2u8; 1000]);
-        assert_eq!(new_leaf.get(&key(3)).unwrap().0, &[1u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[2u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 1000]);
     }
 
     #[test]
@@ -938,10 +993,11 @@ mod tests {
 
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 4);
-        assert_eq!(new_leaf.get(&key(1)).unwrap().0, &[1u8; 900]);
-        assert_eq!(new_leaf.get(&key(2)).unwrap().0, &[1u8; 900]);
-        assert_eq!(new_leaf.get(&key(3)).unwrap().0, &[1u8; 900]);
-        assert_eq!(new_leaf.get(&key(4)).unwrap().0, &[1u8; 900]);
+
+        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key(4)).unwrap().0, &[1u8; 900]);
     }
 
     #[test]
@@ -977,10 +1033,10 @@ mod tests {
         assert_eq!(new_leaf_1.n(), 2);
         assert_eq!(new_leaf_2.n(), 2);
 
-        assert_eq!(new_leaf_1.get(&key(1)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(new_leaf_1.get(&key(2)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(new_leaf_2.get(&key(3)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(new_leaf_2.get(&key(4)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf_1, &key(1)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf_1, &key(2)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf_2, &key(3)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf_2, &key(4)).unwrap().0, &[1u8; 1200]);
     }
 
     #[test]
@@ -1011,8 +1067,8 @@ mod tests {
 
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 2);
-        assert_eq!(new_leaf.get(&key(1)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(new_leaf.get(&key(3)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 1200]);
     }
 
     #[test]
@@ -1063,10 +1119,10 @@ mod tests {
 
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 4);
-        assert_eq!(new_leaf.get(&key(1)).unwrap().0, &[1u8; 800]);
-        assert_eq!(new_leaf.get(&key(3)).unwrap().0, &[1u8; 800]);
-        assert_eq!(new_leaf.get(&key(4)).unwrap().0, &[1u8; 1100]);
-        assert_eq!(new_leaf.get(&key(5)).unwrap().0, &[1u8; 1100]);
+        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 800]);
+        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 800]);
+        assert_eq!(search_leaf(new_leaf, &key(4)).unwrap().0, &[1u8; 1100]);
+        assert_eq!(search_leaf(new_leaf, &key(5)).unwrap().0, &[1u8; 1100]);
     }
 
     #[test]
@@ -1149,7 +1205,8 @@ mod tests {
         let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 1);
-        assert_eq!(new_leaf.get(&key(2)).unwrap().0, &[1u8; 1200]);
+
+        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[1u8; 1200]);
     }
 
     #[test]
@@ -1180,8 +1237,8 @@ mod tests {
         let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 2);
-        assert_eq!(new_leaf.get(&key(1)).unwrap().0, &[1u8; 1800]);
-        assert_eq!(new_leaf.get(&key(2)).unwrap().0, &[1u8; 1800]);
+        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 1800]);
+        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[1u8; 1800]);
 
         assert_eq!(updater.separator_override, Some(separate(&key(2), &key(3))));
         assert_eq!(
@@ -1210,9 +1267,14 @@ mod tests {
 
         updater.try_build_leaves(&mut new_leaves, midpoint).unwrap();
 
-        let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
+        let leaf_1 = &new_leaves.inner.get(&vec![0]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
-        let leaf_body_size = body_size(leaf_1.n(), leaf_1.values_len(0, leaf_1.n()));
+        let leaf_body_size = body_size(
+            3,
+            leaf_1.prefix_len(),
+            leaf_1.compressed_keys_len(0, 3),
+            leaf_1.values_len(0, 3),
+        );
         assert!(leaf_body_size < midpoint);
         let leaf_2 = &new_leaves.inner.get(&separate(&key(3), &key(4))).unwrap().0;
         assert_eq!(leaf_2.n(), 3);
@@ -1256,9 +1318,14 @@ mod tests {
         updater.try_build_leaves(&mut new_leaves, midpoint).unwrap();
 
         // A leaf is perfectly created.
-        let leaf_1 = &new_leaves.inner.get(&vec![0; 32]).unwrap().0;
+        let leaf_1 = &new_leaves.inner.get(&vec![0]).unwrap().0;
         assert_eq!(leaf_1.n(), 3);
-        let leaf_body_size = body_size(3, leaf_1.values_len(0, 3));
+        let leaf_body_size = body_size(
+            3,
+            leaf_1.prefix_len(),
+            leaf_1.uncompressed_keys_len(0, 3),
+            leaf_1.values_len(0, 3),
+        );
         assert!(leaf_body_size > midpoint);
 
         // There is no second created leaf because the remaining ops
@@ -1279,7 +1346,12 @@ mod tests {
         updater.ingest(key(3), Some(vec![1; 500]), false, |_| {});
         updater.ingest(key(4), Some(vec![1; 1000]), false, |_| {});
 
-        assert_eq!(updater.consume_and_update_until(0, 2200), Some(3));
+        assert_eq!(
+            updater
+                .consume_and_update_until(0, 2200)
+                .map(|(items, _gauge)| items),
+            Some(3)
+        );
 
         updater.ops.clear();
         updater.gauge = LeafGauge::default();
@@ -1292,7 +1364,12 @@ mod tests {
         updater.ingest(key(6), Some(vec![1; 1300]), false, |_| {});
 
         // below target
-        assert_eq!(updater.consume_and_update_until(0, 3250), Some(3));
+        assert_eq!(
+            updater
+                .consume_and_update_until(0, 3250)
+                .map(|(items, _gauge)| items),
+            Some(3)
+        );
     }
 
     #[test]
@@ -1314,17 +1391,65 @@ mod tests {
             None,
         );
         updater.ops = vec![
-            LeafOp::KeepChunk(0, 1, leaf.values_len(0, 1)),
-            LeafOp::KeepChunk(1, 2, leaf.values_len(1, 2)),
-            LeafOp::KeepChunk(2, 4, leaf.values_len(2, 4)),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 1,
+                keys_len: leaf.uncompressed_keys_len(0, 1),
+                values_len: leaf.values_len(0, 1),
+            }),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 1,
+                end: 2,
+                keys_len: leaf.uncompressed_keys_len(1, 2),
+                values_len: leaf.values_len(1, 2),
+            }),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 2,
+                end: 4,
+                keys_len: leaf.uncompressed_keys_len(2, 4),
+                values_len: leaf.values_len(2, 4),
+            }),
         ];
 
         // one split exptected
-        assert_eq!(updater.consume_and_update_until(0, 2200), Some(3));
-        assert!(matches!(updater.ops[0], LeafOp::KeepChunk(0, 1, _)));
-        assert!(matches!(updater.ops[1], LeafOp::KeepChunk(1, 2, _)));
-        assert!(matches!(updater.ops[2], LeafOp::KeepChunk(2, 3, _)));
-        assert!(matches!(updater.ops[3], LeafOp::KeepChunk(3, 4, _)));
+        assert_eq!(
+            updater
+                .consume_and_update_until(0, 2200)
+                .map(|(items, _gauge)| items),
+            Some(3)
+        );
+        assert!(matches!(
+            updater.ops[0],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            updater.ops[1],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 1,
+                end: 2,
+                ..
+            })
+        ));
+        assert!(matches!(
+            updater.ops[2],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 2,
+                end: 3,
+                ..
+            })
+        ));
+        assert!(matches!(
+            updater.ops[3],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 3,
+                end: 4,
+                ..
+            })
+        ));
 
         // below target
         let leaf = make_leaf(vec![
@@ -1344,17 +1469,41 @@ mod tests {
         updater.ops = vec![
             LeafOp::Insert(key(1), vec![1; 1100], false),
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 2,
+                keys_len: leaf.uncompressed_keys_len(0, 2),
+                values_len: leaf.values_len(0, 2),
+            }),
             LeafOp::Insert(key(5), vec![1; 900], false),
             LeafOp::Insert(key(6), vec![1; 1300], false),
         ];
 
         // one split exptected
-        assert_eq!(updater.consume_and_update_until(0, 3250), Some(3));
+        assert_eq!(
+            updater
+                .consume_and_update_until(0, 3250)
+                .map(|(items, _gauge)| items),
+            Some(3)
+        );
         assert!(matches!(updater.ops[0], LeafOp::Insert(_, _, _)));
         assert!(matches!(updater.ops[1], LeafOp::Insert(_, _, _)));
-        assert!(matches!(updater.ops[2], LeafOp::KeepChunk(0, 1, _)));
-        assert!(matches!(updater.ops[3], LeafOp::KeepChunk(1, 2, _)));
+        assert!(matches!(
+            updater.ops[2],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            updater.ops[3],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 1,
+                end: 2,
+                ..
+            })
+        ));
         assert!(matches!(updater.ops[4], LeafOp::Insert(_, _, _)));
         assert!(matches!(updater.ops[5], LeafOp::Insert(_, _, _)));
     }
@@ -1375,7 +1524,12 @@ mod tests {
         };
 
         // standard split
-        let mut ops = vec![LeafOp::KeepChunk(0, 4, leaf.values_len(0, 4))];
+        let mut ops = vec![LeafOp::KeepChunk(KeepChunk {
+            start: 0,
+            end: 4,
+            keys_len: leaf.uncompressed_keys_len(0, 4),
+            values_len: leaf.values_len(0, 4),
+        })];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1385,10 +1539,17 @@ mod tests {
             BRANCH_NODE_SIZE,
         );
         assert_eq!(ops.len(), 2);
-        assert!(matches!(ops[0], LeafOp::KeepChunk(_,_ , size) if size > 2200));
+        assert!(
+            matches!(ops[0], LeafOp::KeepChunk(KeepChunk {values_len, ..}) if values_len > 2200)
+        );
 
         // Perform a split which is not able to reach the target
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(KeepChunk {
+            start: 0,
+            end: 2,
+            keys_len: leaf.uncompressed_keys_len(0, 2),
+            values_len: leaf.values_len(0, 2),
+        })];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1398,11 +1559,18 @@ mod tests {
             BRANCH_NODE_SIZE,
         );
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], LeafOp::KeepChunk(_,_ , size) if size < 2500));
+        assert!(
+            matches!(ops[0], LeafOp::KeepChunk(KeepChunk { values_len, ..}) if values_len < 2500)
+        );
 
         // Perform a split with a target too little,
         // but something smaller than the limit will still be split.
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(KeepChunk {
+            start: 0,
+            end: 2,
+            keys_len: leaf.uncompressed_keys_len(0, 2),
+            values_len: leaf.values_len(0, 2),
+        })];
         super::try_split_keep_chunk(
             &base,
             &LeafGauge::default(),
@@ -1412,14 +1580,23 @@ mod tests {
             BRANCH_NODE_SIZE,
         );
         assert_eq!(ops.len(), 2);
-        assert!(matches!(ops[0], LeafOp::KeepChunk(_,_ , size) if size > 500));
+        assert!(
+            matches!(ops[0], LeafOp::KeepChunk(KeepChunk { values_len, ..}) if values_len > 500)
+        );
 
         // Perform a split with a limit too little,
         // nothing will still be split.
-        let mut ops = vec![LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2))];
+        let mut ops = vec![LeafOp::KeepChunk(KeepChunk {
+            start: 0,
+            end: 2,
+            keys_len: leaf.uncompressed_keys_len(0, 2),
+            values_len: leaf.values_len(0, 2),
+        })];
         super::try_split_keep_chunk(&base, &LeafGauge::default(), &mut ops, 0, 500, 500);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], LeafOp::KeepChunk(0,2 , size) if size == leaf.values_len(0, 2)));
+        assert!(
+            matches!(ops[0], LeafOp::KeepChunk(KeepChunk {start: 0, end: 2, values_len, ..}) if values_len == leaf.values_len(0, 2))
+        );
     }
 
     #[test]
@@ -1443,8 +1620,18 @@ mod tests {
         updater.ops = vec![
             LeafOp::Insert(key(1), vec![1; 1100], false),
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
-            LeafOp::KeepChunk(2, 4, leaf.values_len(2, 4)),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 2,
+                keys_len: leaf.uncompressed_keys_len(0, 2),
+                values_len: leaf.values_len(0, 2),
+            }),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 2,
+                end: 4,
+                keys_len: leaf.uncompressed_keys_len(2, 4),
+                values_len: leaf.values_len(2, 4),
+            }),
             LeafOp::Insert(key(5), vec![1; 900], false),
             LeafOp::Insert(key(6), vec![1; 1300], false),
         ];
@@ -1473,14 +1660,26 @@ mod tests {
         );
         updater.ops = vec![
             LeafOp::Insert(key(2), vec![1; 1100], false),
-            LeafOp::KeepChunk(0, 2, leaf.values_len(0, 2)),
+            LeafOp::KeepChunk(KeepChunk {
+                start: 0,
+                end: 2,
+                keys_len: leaf.uncompressed_keys_len(0, 2),
+                values_len: leaf.values_len(0, 2),
+            }),
             LeafOp::Insert(key(5), vec![1; 1100], false),
         ];
 
         updater.extract_insert_from_keep_chunk(1);
         assert_eq!(updater.ops.len(), 4);
         assert!(matches!(updater.ops[1], LeafOp::Insert(_, _, _)));
-        assert!(matches!(updater.ops[2], LeafOp::KeepChunk(1, 2, _)));
+        assert!(matches!(
+            updater.ops[2],
+            LeafOp::KeepChunk(KeepChunk {
+                start: 1,
+                end: 2,
+                ..
+            })
+        ));
         // 0-sized junk cannot exists
         updater.extract_insert_from_keep_chunk(2);
         assert_eq!(updater.ops.len(), 4);

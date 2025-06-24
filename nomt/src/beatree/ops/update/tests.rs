@@ -4,7 +4,7 @@ use crate::{
         branch::{self, node::BranchNode, BRANCH_NODE_BODY_SIZE, BRANCH_NODE_SIZE},
         leaf::{
             self,
-            node::{LeafNode, MAX_LEAF_VALUE_SIZE},
+            node::{LeafNode, MAX_KEY_LEN, MAX_LEAF_VALUE_SIZE},
         },
         leaf_cache::LeafCache,
         ops::{
@@ -50,9 +50,7 @@ lazy_static! {
     };
     static ref KEYS: Vec<Vec<u8>> = rand_keys(LEAF_STAGE_INITIAL_CAPACITY);
     static ref SEPARATORS: Vec<Vec<u8>> = {
-        // TODO: once var len keys are fully supported the first item in
-        // separator will become vec![0]
-        let mut separators = vec![vec![0; 32]];
+        let mut separators = vec![vec![0]];
         separators.extend(
             rand_keys(BRANCH_STAGE_INITIAL_CAPACITY)
                 .windows(2)
@@ -72,7 +70,9 @@ fn rand_keys(n: usize) -> Vec<Vec<u8>> {
     let mut rng = rand_pcg::Lcg64Xsh32::from_seed(*SEED);
     let mut items = BTreeSet::new();
     while items.len() < n {
-        let mut key = vec![0; 32];
+        let len = rng.gen_range(1..MAX_KEY_LEN) as usize;
+
+        let mut key = vec![0; len];
         rng.fill(&mut key[..]);
         items.insert(key);
     }
@@ -165,11 +165,8 @@ struct Key {
 // required to let quickcheck generate arbitrary keys as arguments for the tests
 impl Arbitrary for Key {
     fn arbitrary(g: &mut Gen) -> Key {
-        // TODO: this will need to be updated to properly test var-len keys.
-        let mut key = vec![0; 32];
-        for k in key.iter_mut() {
-            *k = u8::arbitrary(g);
-        }
+        let mut key = Vec::<u8>::arbitrary(g);
+        key.truncate(1024);
         Key { inner: key }
     }
 }
@@ -293,8 +290,9 @@ fn is_valid_leaf_stage_output(
 
     let mut found_underfull_leaf = false;
     for (separator, new_pn) in output.leaf_changeset.into_iter() {
-        if separator == [0; 32] && new_pn.is_none() {
+        if separator == [0] && new_pn.is_none() {
             // First leaf with separator of all 0 cannot be eliminated.
+            println!("first page is deleted");
             return false;
         }
 
@@ -303,43 +301,53 @@ fn is_valid_leaf_stage_output(
         let leaf_node = LeafNode { inner: page };
 
         let n = leaf_node.n();
-
-        let mut value_size_sum = 0;
+        let prefix_len = leaf_node.prefix_len();
+        let values_len = leaf_node.values_len(0, n);
+        let compressed_keys_len = leaf_node.compressed_keys_len(0, n);
 
         // each leaf must contain all the keys that are expected in the range
         // between its first and last key
         let first = leaf_node.key(0);
         let last = leaf_node.key(n - 1);
-        if first > last {
+
+        if &first > &last {
+            println!("first smaller than last");
             return false;
         }
+
         let mut expected = expected_values.range(first..=last);
 
         for i in 0..n {
             let key = leaf_node.key(i);
             if deletions.contains(&key) {
+                println!("key should have been eliminated");
                 return false;
             }
 
             let value = leaf_node.value(i).0;
-            value_size_sum += value.len();
 
             let Some((expected_key, expected_value)) = expected.next() else {
+                println!("leaf contains less keys than expected");
                 return false;
             };
 
             if key != *expected_key || value != expected_value {
+                println!("key or value not expected");
                 return false;
             }
         }
 
         if expected.next().is_some() {
+            println!("leaf contain less item than expected");
             return false;
         }
 
         // all new leaves must respect the half-full requirement except for the last one
-        if leaf::node::body_size(n, value_size_sum) < LEAF_MERGE_THRESHOLD {
+        if leaf::node::body_size(prefix_len, n, compressed_keys_len, values_len)
+            < LEAF_MERGE_THRESHOLD
+        {
             if found_underfull_leaf == true {
+                println!("found_underfull_leaf");
                 return false;
             }
             found_underfull_leaf = true;
@@ -604,7 +612,7 @@ fn branch_stage() {
 
 #[test]
 fn enforce_first_leaf_separator() {
-    let mut separators = vec![vec![0; 32]];
+    let mut separators = vec![vec![0]];
     let keys = rand_keys(9);
     separators.extend(keys.windows(2).map(|w| separate(&w[0], &w[1])));
     // NOTE: The test relies entirely on the fact that `init_bbn_index`
@@ -636,7 +644,7 @@ fn enforce_first_leaf_separator() {
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
-    assert_eq!(leaf_changeset[0].0, [0; 32]);
+    assert_eq!(leaf_changeset[0].0, [0]);
     assert_eq!(leaf_changeset[0].1, Some(PageNumber(n_take as u32)));
     // All others are expected to be deleted leaves,
     // in particular, the previous separator associated with the new first leaf is deleted.
@@ -658,7 +666,7 @@ fn enforce_first_leaf_separator() {
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
-    assert_eq!(leaf_changeset[0].0, [0; 32]);
+    assert_eq!(leaf_changeset[0].0, [0]);
     assert_eq!(leaf_changeset[0].1, Some(PageNumber(n_take as u32)));
     // + 1 = the leaf we pushed
     // + 1 = deletion of the separator of the new first leaf
@@ -676,7 +684,7 @@ fn enforce_first_leaf_separator() {
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
-    assert_eq!(leaf_changeset[0].0, [0; 32]);
+    assert_eq!(leaf_changeset[0].0, [0]);
     assert_eq!(leaf_changeset[0].1, Some(PageNumber(15)));
     //  leaf_changeset len in n_take + 1, but the item associated
     //  to the new first leaf is removed
@@ -695,7 +703,7 @@ fn enforce_first_leaf_separator() {
     leaf_stage::enforce_first_leaf_separator(&mut leaf_changeset, &bbn_index);
 
     // new first leaf
-    assert_eq!(leaf_changeset[0].0, [0; 32]);
+    assert_eq!(leaf_changeset[0].0, [0]);
     assert_eq!(leaf_changeset[0].1, Some(PageNumber(15)));
     assert_eq!(leaf_changeset[n_take].1, None);
     assert_eq!(leaf_changeset.len(), n_take + 1);
