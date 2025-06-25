@@ -6,7 +6,7 @@ use crate::beatree::{
 // separate two keys a and b where b > a
 pub fn separate(a: &Key, b: &Key) -> Key {
     //if b > a at some point b must have a 1 where a has a 0 and they are equal up to that point.
-    let bit_len = prefix_len(a, b) + 1;
+    let bit_len = bit_prefix_len(a, b) + 1;
     let byte_len = (bit_len + 7) / 8;
     let mut separator = vec![0; byte_len];
 
@@ -22,7 +22,7 @@ pub fn separate(a: &Key, b: &Key) -> Key {
     separator
 }
 
-pub fn prefix_len(key_a: &Key, key_b: &Key) -> usize {
+pub fn bit_prefix_len(key_a: &Key, key_b: &Key) -> usize {
     let mut bit_len = 0;
     let min_byte_len = std::cmp::min(key_a.len(), key_b.len());
     'byte_loop: for byte in 0..min_byte_len {
@@ -44,24 +44,6 @@ pub fn byte_prefix_len(key_a: &Key, key_b: &Key) -> usize {
         .zip(key_b.iter())
         .take_while(|(byte_a, byte_b)| byte_a == byte_b)
         .count()
-}
-
-pub fn separator_len(key: &Key) -> usize {
-    let mut trailing_zeros = 0;
-    'byte_offset: for byte in (0..key.len()).rev() {
-        for bit in (0..8).rev() {
-            let mask = 1 << (7 - bit);
-            if (key[byte] & mask) == mask {
-                break 'byte_offset;
-            }
-            trailing_zeros += 1;
-        }
-    }
-
-    match (key.len() * 8) - trailing_zeros {
-        separator_len if separator_len == 0 => 1,
-        separator_len => separator_len,
-    }
 }
 
 // Reconstruct a key starting from a prefix and a misaligned separator.
@@ -365,25 +347,6 @@ pub mod benches {
         }
     }
 
-    pub fn separator_len_benchmark(c: &mut Criterion) {
-        let mut group = c.benchmark_group("separator_len");
-
-        // n_bytes represents the amount of bytes set to one
-        // from the beginning of the key
-        for n_bytes in [16, 20, 24, 28, 31].into_iter().rev() {
-            let mut separator = [0; 32];
-            for byte in separator.iter_mut().take(n_bytes) {
-                *byte = 255;
-            }
-
-            group.bench_function(BenchmarkId::new("zero_bytes", 32 - n_bytes), |b| {
-                b.iter(|| super::separator_len(&separator));
-            });
-        }
-
-        group.finish();
-    }
-
     pub fn prefix_len_benchmark(c: &mut Criterion) {
         let mut group = c.benchmark_group("prefix_len");
 
@@ -623,22 +586,7 @@ mod tests {
             let b = vec![255; 32];
 
             let expected_res = reference_prefix_len(&a, &b);
-            let res = super::prefix_len(&a, &b);
-
-            assert_eq!(expected_res, res);
-        }
-    }
-
-    #[test]
-    fn separator_len() {
-        for separator_bit_len in 1..257 {
-            let mut a = vec![255; 32];
-            if separator_bit_len != 257 {
-                a.view_bits_mut::<Msb0>()[separator_bit_len..].fill(false);
-            }
-
-            let expected_res = 256 - a.view_bits::<Msb0>().trailing_zeros();
-            let res = super::separator_len(&a);
+            let res = super::bit_prefix_len(&a, &b);
 
             assert_eq!(expected_res, res);
         }

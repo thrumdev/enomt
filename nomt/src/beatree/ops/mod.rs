@@ -243,7 +243,7 @@ pub mod benches {
 
             let mut separators: Vec<(usize, Key)> = get_keys(prefix_len_bytes, n)
                 .into_iter()
-                .map(|s| (separator_len(&s), s))
+                .map(|s| (s.len(), s))
                 .collect();
             separators.sort_by(|a, b| a.1.cmp(&b.1));
 

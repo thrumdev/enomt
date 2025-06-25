@@ -51,7 +51,8 @@ pub fn reconstruct(
         let mut branch = BranchNode::new_in(&page_pool);
         branch.as_mut_slice().copy_from_slice(node);
 
-        let mut separator = [0u8; 32];
+        let separator_len = ((view.prefix_bit_len() as usize + view.separator(0).len()) + 7) / 8;
+        let mut separator = vec![0; separator_len];
         {
             let prefix = view.prefix();
             let separator = separator.view_bits_mut::<Msb0>();
@@ -60,8 +61,7 @@ pub fn reconstruct(
             separator[prefix.len()..prefix.len() + first.len()].copy_from_bitslice(first);
         }
 
-        // TODO: separtor will be already a vec
-        if let Some(_) = index.insert(separator.to_vec(), Arc::new(branch)) {
+        if let Some(_) = index.insert(separator.clone(), Arc::new(branch)) {
             bail!(
                 "2 branch nodes with same separator, separator={:?}",
                 separator

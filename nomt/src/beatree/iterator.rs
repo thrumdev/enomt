@@ -621,26 +621,25 @@ mod tests {
 
     fn build_branch(leaves: Vec<(Key, PageNumber)>) -> Arc<BranchNode> {
         let n = leaves.len();
-        let prefix_len = {
-            let mut prefix_len = 0;
+        let prefix_bit_len = {
+            let mut prefix_bit_len = 0;
             let mut first_key = None;
             for (key, _) in &leaves {
                 if let Some(first_key) = first_key {
-                    prefix_len = bit_ops::prefix_len(key, first_key)
+                    prefix_bit_len = bit_ops::bit_prefix_len(key, first_key)
                 } else {
-                    prefix_len = bit_ops::separator_len(key);
+                    prefix_bit_len = key.len() * 8;
                     first_key = Some(key);
                 }
             }
 
-            prefix_len
+            prefix_bit_len
         };
 
         let branch = BranchNode::new_in(&PAGE_POOL);
-        let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_len);
+        let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_bit_len);
         for (key, pn) in leaves {
-            let separator_len = bit_ops::separator_len(&key);
-            builder.push(key, separator_len, pn.0);
+            builder.push(key, pn.0);
         }
 
         Arc::new(builder.finish())

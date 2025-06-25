@@ -96,11 +96,11 @@ impl BranchNode {
         slice[6..8].copy_from_slice(&prefix_compressed.to_le_bytes());
     }
 
-    pub fn prefix_len(&self) -> u16 {
-        self.view().prefix_len()
+    pub fn prefix_bit_len(&self) -> u16 {
+        self.view().prefix_bit_len()
     }
 
-    pub fn set_prefix_len(&mut self, len: u16) {
+    pub fn set_prefix_bit_len(&mut self, len: u16) {
         let slice = self.as_mut_slice();
         slice[8..10].copy_from_slice(&len.to_le_bytes());
     }
@@ -113,13 +113,19 @@ impl BranchNode {
         self.view().raw_prefix()
     }
 
-    // Set the prefix extracting `self.prefix_len` bits from the provided key
+    // Set the prefix extracting `self.prefix_bit_len` bits from the provided key
     fn set_prefix(&mut self, mut key: Vec<u8>) {
         let start = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
-        let prefix_len = self.prefix_len() as usize;
-        let end = start + ((prefix_len + 7) / 8).next_multiple_of(8);
+        let prefix_bit_len = self.prefix_bit_len() as usize;
+        let end = start + ((prefix_bit_len + 7) / 8).next_multiple_of(8);
         key.extend(std::iter::repeat(0).take(key.len().next_multiple_of(8)));
-        bitwise_memcpy(&mut self.as_mut_slice()[start..end], 0, &key, 0, prefix_len);
+        bitwise_memcpy(
+            &mut self.as_mut_slice()[start..end],
+            0,
+            &key,
+            0,
+            prefix_bit_len,
+        );
     }
 
     fn cells_mut(&mut self) -> &mut [[u8; 2]] {
@@ -166,14 +172,15 @@ impl BranchNode {
         bit_offset_end: usize,
     ) {
         let n = self.n() as usize;
-        let prefix_len = self.prefix_len() as usize;
+        let prefix_bit_len = self.prefix_bit_len() as usize;
         let slice = self.as_mut_slice();
 
         let cells_start = BRANCH_NODE_HEADER_SIZE + (i * 2);
         slice[cells_start..][..2].copy_from_slice(&(bit_offset_end as u16).to_le_bytes());
 
         let separators_start = BRANCH_NODE_HEADER_SIZE + (n * 2);
-        slice[separators_start..].view_bits_mut()[prefix_len..][bit_offset_start..bit_offset_end]
+        slice[separators_start..].view_bits_mut()[prefix_bit_len..]
+            [bit_offset_start..bit_offset_end]
             .copy_from_bitslice(&separator);
     }
 
@@ -224,7 +231,7 @@ impl<'a> BranchNodeView<'a> {
         u16::from_le_bytes(self.inner[6..8].try_into().unwrap())
     }
 
-    pub fn prefix_len(&self) -> u16 {
+    pub fn prefix_bit_len(&self) -> u16 {
         u16::from_le_bytes(self.inner[8..10].try_into().unwrap())
     }
 
@@ -250,16 +257,16 @@ impl<'a> BranchNodeView<'a> {
 
     pub fn separator(&self, i: usize) -> &'a BitSlice<u8, Msb0> {
         let start_separators = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
-        let mut bit_offset_start = self.prefix_len() as usize;
+        let mut bit_offset_start = self.prefix_bit_len() as usize;
         bit_offset_start += if i != 0 { self.cell(i - 1) } else { 0 };
-        let bit_offset_end = self.prefix_len() as usize + self.cell(i);
+        let bit_offset_end = self.prefix_bit_len() as usize + self.cell(i);
         &self.inner[start_separators..].view_bits()[bit_offset_start..bit_offset_end]
     }
 
     fn raw_separators_data(&self, from: usize, to: usize) -> RawSeparatorsData {
-        let mut bit_offset_start = self.prefix_len() as usize;
+        let mut bit_offset_start = self.prefix_bit_len() as usize;
         bit_offset_start += if from != 0 { self.cell(from - 1) } else { 0 };
-        let bit_offset_end = self.prefix_len() as usize + self.cell(to - 1);
+        let bit_offset_end = self.prefix_bit_len() as usize + self.cell(to - 1);
 
         let bit_len = bit_offset_end - bit_offset_start;
 
@@ -306,11 +313,11 @@ impl<'a> BranchNodeView<'a> {
 
     pub fn prefix(&self) -> &'a BitSlice<u8, Msb0> {
         let start = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
-        &self.inner[start..].view_bits()[..self.prefix_len() as usize]
+        &self.inner[start..].view_bits()[..self.prefix_bit_len() as usize]
     }
 
     pub fn raw_prefix(&self) -> RawPrefix<'a> {
-        let bit_len = self.prefix_len() as usize;
+        let bit_len = self.prefix_bit_len() as usize;
 
         let start = BRANCH_NODE_HEADER_SIZE + self.n() as usize * 2;
         let end = start + ((bit_len + 7) / 8);
@@ -366,10 +373,10 @@ pub type RawSeparator<'a> = (&'a [u8], usize, usize);
 pub type RawSeparators<'a> = (&'a [u8], usize, usize);
 pub type RawSeparatorsMut<'a> = (&'a mut [u8], usize, usize);
 
-pub fn body_size(prefix_len: usize, total_separator_lengths: usize, n: usize) -> usize {
+pub fn body_size(prefix_bit_len: usize, total_separator_bit_lengths: usize, n: usize) -> usize {
     // prefix plus separator lengths are measured in bits, which we round
     // up to the next byte boundary. They are preceded by cells and followed by node pointers
-    (n * 2) + (prefix_len + total_separator_lengths + 7) / 8 + (n * 4)
+    (n * 2) + (prefix_bit_len + total_separator_bit_lengths + 7) / 8 + (n * 4)
 }
 
 /// Given inputs describing a range of compressed separators, output the sum of the separator
@@ -379,15 +386,17 @@ pub fn body_size(prefix_len: usize, total_separator_lengths: usize, n: usize) ->
 ///   - The length of the compressed range
 ///   - The number of separators in the range
 ///   - The length of the first separator in the range.
-pub fn uncompressed_separator_range_size(
-    prefix_len: usize,
-    compressed_lengths: usize,
+pub fn uncompressed_separator_range_byte_size(
+    prefix_bit_len: usize,
+    compressed_bit_lengths: usize,
     n: usize,
-    first_len: usize,
+    first_byte_len: usize,
 ) -> usize {
-    let first_contraction = prefix_len.saturating_sub(first_len);
-    let expansion = prefix_len * n;
-    compressed_lengths + expansion - first_contraction
+    let first_contraction = prefix_bit_len.saturating_sub(first_byte_len * 8);
+    let expansion = prefix_bit_len * n;
+    // Rounding up the number of uncompressed bytes because separators are bit-aligned
+    // and we need the total amount of bytes, including the last padded byte.
+    (compressed_bit_lengths + expansion - first_contraction + 7) / 8
 }
 
 /// Given inputs describing a set of separators for a branch, output the compressed size if compressed
@@ -395,17 +404,18 @@ pub fn uncompressed_separator_range_size(
 ///
 /// `prefix_compressed_items` must be greater than zero.
 /// `pre_compression_size_sum` is the sum of all separator lengths, not including the first.
-pub fn compressed_separator_range_size(
-    first_separator_length: usize,
+pub fn compressed_separator_range_bit_size(
+    first_separator_byte_length: usize,
     prefix_compressed_items: usize,
-    pre_compression_size_sum: usize,
-    prefix_len: usize,
+    pre_compression_size_byte_sum: usize,
+    prefix_bit_len: usize,
 ) -> usize {
     // first length can be less than the shared prefix due to trailing zero compression.
     // then add the total size.
     // then subtract the size difference due to compression of the remaining items.
-    first_separator_length.saturating_sub(prefix_len) + pre_compression_size_sum
-        - (prefix_compressed_items - 1) * prefix_len
+    (first_separator_byte_length * 8).saturating_sub(prefix_bit_len)
+        + (pre_compression_size_byte_sum * 8)
+        - (prefix_compressed_items - 1) * prefix_bit_len
 }
 
 // Extract the key at a given index from a BranchNode, taking into account prefix compression.
@@ -422,7 +432,7 @@ pub fn get_key(node: &BranchNode, index: usize) -> Key {
 pub struct BranchNodeBuilder {
     branch: BranchNode,
     index: usize,
-    prefix_len: usize,
+    prefix_bit_len: usize,
     prefix_compressed: usize,
     separator_bit_offset: usize,
 }
@@ -432,16 +442,16 @@ impl BranchNodeBuilder {
         mut branch: BranchNode,
         n: usize,
         prefix_compressed: usize,
-        prefix_len: usize,
+        prefix_bit_len: usize,
     ) -> Self {
         branch.set_n(n as u16);
         branch.set_prefix_compressed(prefix_compressed as u16);
-        branch.set_prefix_len(prefix_len as u16);
+        branch.set_prefix_bit_len(prefix_bit_len as u16);
 
         BranchNodeBuilder {
             branch,
             index: 0,
-            prefix_len,
+            prefix_bit_len,
             prefix_compressed,
             separator_bit_offset: 0,
         }
@@ -452,7 +462,7 @@ impl BranchNodeBuilder {
         self.index
     }
 
-    pub fn push(&mut self, key: Key, mut separator_len: usize, pn: u32) {
+    pub fn push(&mut self, key: Key, pn: u32) {
         assert!(self.index < self.branch.n() as usize);
 
         if self.index == 0 {
@@ -462,14 +472,13 @@ impl BranchNodeBuilder {
         let separator = if self.index < self.prefix_compressed {
             // The first separator can have length less than prefix due to trailing zero
             // compression.
-            separator_len = separator_len.saturating_sub(self.prefix_len);
-            &key.view_bits::<Msb0>()[self.prefix_len..][..separator_len]
+            &key.view_bits::<Msb0>()[self.prefix_bit_len..]
         } else {
-            &key.view_bits::<Msb0>()[..separator_len]
+            &key.view_bits::<Msb0>()
         };
 
         let offset_start = self.separator_bit_offset;
-        let offset_end = self.separator_bit_offset + separator_len;
+        let offset_end = self.separator_bit_offset + separator.len();
 
         self.branch
             .set_separator(self.index, separator, offset_start, offset_end);
@@ -503,7 +512,7 @@ impl BranchNodeBuilder {
         }
 
         let bit_prefix_len_difference =
-            base.prefix_len() as isize - self.branch.prefix_len() as isize;
+            base.prefix_bit_len() as isize - self.branch.prefix_bit_len() as isize;
         let is_prefix_extension = bit_prefix_len_difference.is_positive();
         let bit_prefix_len_difference = bit_prefix_len_difference.abs() as usize;
 
@@ -521,16 +530,16 @@ impl BranchNodeBuilder {
             .zip(&mut self.branch.cells_mut()[self.index..self.index + n_items])
         {
             let base_cell_pointer = u16::from_le_bytes(*base_cell) as usize;
-            let mut separator_len = base_cell_pointer - base_prev_cell_pointer;
+            let mut separator_bit_len = base_cell_pointer - base_prev_cell_pointer;
             base_prev_cell_pointer = base_cell_pointer;
 
             if is_prefix_extension {
-                separator_len += bit_prefix_len_difference;
+                separator_bit_len += bit_prefix_len_difference;
             } else {
-                separator_len = separator_len.saturating_sub(bit_prefix_len_difference);
+                separator_bit_len = separator_bit_len.saturating_sub(bit_prefix_len_difference);
             }
 
-            cell_pointer += separator_len as usize;
+            cell_pointer += separator_bit_len as usize;
             cell.copy_from_slice(&u16::try_from(cell_pointer).unwrap().to_le_bytes());
         }
 
@@ -594,7 +603,7 @@ impl BranchNodeBuilder {
             // the base prefix and added in front of every separator.
             // The interested bits are the last bits of the prefix
 
-            let bits_to_skip = base.prefix_len() as usize - bit_prefix_len_difference as usize;
+            let bits_to_skip = base.prefix_bit_len() as usize - bit_prefix_len_difference as usize;
             let bytes_to_skip = bits_to_skip / 8;
             let prefix_bit_start = bits_to_skip % 8;
 
@@ -687,10 +696,7 @@ impl BranchNodeBuilder {
 #[cfg(test)]
 mod test {
     use super::get_key;
-    use crate::{
-        beatree::{branch::BranchNodeBuilder, ops::bit_ops::separator_len},
-        io::PagePool,
-    };
+    use crate::{beatree::branch::BranchNodeBuilder, io::PagePool};
 
     lazy_static::lazy_static! {
         static ref PAGE_POOL: PagePool = PagePool::new();
@@ -717,7 +723,7 @@ mod test {
         // prefix_len: 8
         let mut builder = BranchNodeBuilder::new(BranchNode::new_in(&PAGE_POOL), 10, 10, 8);
         for (i, k) in keys.iter().enumerate() {
-            builder.push(k.clone(), separator_len(k), i as u32);
+            builder.push(k.clone(), i as u32);
         }
         let base_branch = builder.finish();
 
@@ -734,7 +740,7 @@ mod test {
         key255[0] = 0x11;
         key255[1] = 255;
         key255[2] = 255;
-        builder.push(key255.clone(), separator_len(&key255), 10);
+        builder.push(key255.clone(), 10);
         // prefix: 00010001_1
         // key p + 1:        0000000_00000001 // cell_poiter: 15
         // key p + 2:        0000000_00000010 // cell_poiter: 29
@@ -753,7 +759,7 @@ mod test {
             7, /*prefix_len*/
         );
         builder.push_chunk(&base_branch, 1, 4, [].into_iter());
-        builder.push(key255.clone(), separator_len(&key255), 10);
+        builder.push(key255.clone(), 10);
         // prefix: 0001000
         // key 1:         1_10000000_00000001 // cell_poiter: 17
         // key 2:         1_10000000_0000001X // cell_poiter: 33
@@ -800,6 +806,7 @@ pub mod benches {
 
             let mut separators: Vec<(usize, Key)> = get_keys(prefix_len_bytes, n)
                 .into_iter()
+                // TODO: change
                 .map(|s| (separator_len(&s), s))
                 .collect();
             separators.sort_by(|a, b| a.1.cmp(&b.1));

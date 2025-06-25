@@ -3,10 +3,7 @@ use std::{ops::Range, sync::Arc};
 use crate::beatree::{
     allocator::PageNumber,
     branch::{self as branch_node, node, BranchNode, BranchNodeBuilder, BRANCH_NODE_BODY_SIZE},
-    ops::{
-        bit_ops::{prefix_len, separator_len},
-        find_key_pos,
-    },
+    ops::{bit_ops::bit_prefix_len, find_key_pos},
     Key,
 };
 use crate::io::PagePool;
@@ -52,7 +49,6 @@ impl BaseBranch {
         }
     }
 
-    // TODO: This may eventually contain something like &Key.
     pub fn key(&self, i: usize) -> Key {
         get_key(&self.node, i)
     }
@@ -241,7 +237,7 @@ fn build_branch(
         branch,
         gauge.n,
         gauge.prefix_compressed_items(),
-        gauge.prefix_len,
+        gauge.prefix_bit_len,
     );
 
     let Some(base) = base else {
@@ -249,7 +245,7 @@ fn build_branch(
         for op in ops {
             match op {
                 // TODO: this clone could be replaced with a simple std::mem::take
-                BranchOp::Insert(key, pn) => builder.push(key.clone(), separator_len(key), pn.0),
+                BranchOp::Insert(key, pn) => builder.push(key.clone(), pn.0),
                 _ => panic!("Unextected BranchOp creating a BranchNode without BaseBranch"),
             }
         }
@@ -290,8 +286,7 @@ fn build_branch(
 
         for pos in compressed_end..base_range.end {
             let (key, pn) = base.key_value(pos);
-            let key_separator_len = separator_len(&key);
-            builder.push(key, key_separator_len, pn.0);
+            builder.push(key, pn.0);
         }
     };
 
@@ -358,7 +353,7 @@ fn build_branch(
             BranchOp::Insert(key, pn) => {
                 // TODO: this clone should be possible to be substituted with a simple std::mem::take
                 // builder.push(std::mem::take(key), separator_len(key), pn.0);
-                builder.push(key.clone(), separator_len(key), pn.0);
+                builder.push(key.clone(), pn.0);
                 i += 1;
             }
             BranchOp::KeepChunk(chunk) => {
@@ -383,11 +378,11 @@ fn build_branch(
 
 #[derive(Clone)]
 pub struct BranchGauge {
-    // key and length of the first separator if any
-    first_separator: Option<(Key, usize)>,
-    prefix_len: usize,
+    // the first separator if any
+    first_separator: Option<Key>,
+    prefix_bit_len: usize,
     // sum of all separator lengths (not including the first key).
-    sum_separator_lengths: usize,
+    sum_separator_byte_lengths: usize,
     // the number of items that are prefix compressed.`None` means everything will be compressed.
     pub prefix_compressed: Option<usize>,
     n: usize,
@@ -397,8 +392,8 @@ impl Default for BranchGauge {
     fn default() -> Self {
         BranchGauge {
             first_separator: None,
-            prefix_len: 0,
-            sum_separator_lengths: 0,
+            prefix_bit_len: 0,
+            sum_separator_byte_lengths: 0,
             prefix_compressed: None,
             n: 0,
         }
@@ -406,19 +401,20 @@ impl Default for BranchGauge {
 }
 
 impl BranchGauge {
-    pub fn ingest_key(&mut self, key: &Key, len: usize) {
-        let Some((ref first, _)) = self.first_separator else {
-            self.first_separator = Some((key.clone(), len));
-            self.prefix_len = len;
+    pub fn ingest_key(&mut self, key: &Key) {
+        let Some(ref first) = self.first_separator else {
+            self.first_separator = Some(key.clone());
+            self.prefix_bit_len = key.len();
 
             self.n = 1;
             return;
         };
 
         if self.prefix_compressed.is_none() {
-            self.prefix_len = prefix_len(first, key);
+            self.prefix_bit_len = bit_prefix_len(first, key);
         }
-        self.sum_separator_lengths += len;
+
+        self.sum_separator_byte_lengths += key.len();
         self.n += 1;
     }
 
@@ -427,35 +423,34 @@ impl BranchGauge {
         match op {
             BranchOp::Update(pos, _) => {
                 let key = get_key(&base.as_ref().unwrap().node, *pos);
-                let separator_len_key = separator_len(&key);
-                self.ingest_key(&key, separator_len_key);
+                self.ingest_key(&key);
             }
             BranchOp::KeepChunk(ref chunk) => {
                 self.ingest_chunk(base.as_ref().unwrap(), chunk);
             }
             BranchOp::Insert(key, _) => {
-                let separator_len_key = separator_len(&key);
-                self.ingest_key(key, separator_len_key);
+                self.ingest_key(key);
             }
         }
     }
 
     pub fn ingest_chunk(&mut self, base: &BaseBranch, chunk: &KeepChunk) {
-        if let Some((ref first, _)) = self.first_separator {
+        if let Some(ref first) = self.first_separator {
             if self.prefix_compressed.is_none() {
                 let chunk_last_key = base.key(chunk.end - 1);
-                self.prefix_len = prefix_len(first, &chunk_last_key);
+                self.prefix_bit_len = bit_prefix_len(first, &chunk_last_key);
             }
-            self.sum_separator_lengths += chunk.sum_separator_lengths;
+            self.sum_separator_byte_lengths += chunk.sum_separator_byte_lengths;
             self.n += chunk.len();
         } else {
             let chunk_first_key = base.key(chunk.start);
             let chunk_last_key = base.key(chunk.end - 1);
-            let first_separator_len = separator_len(&chunk_first_key);
+            let first_separator_len = chunk_first_key.len();
 
-            self.prefix_len = prefix_len(&chunk_first_key, &chunk_last_key);
-            self.first_separator = Some((chunk_first_key, first_separator_len));
-            self.sum_separator_lengths = chunk.sum_separator_lengths - first_separator_len;
+            self.prefix_bit_len = bit_prefix_len(&chunk_first_key, &chunk_last_key);
+            self.first_separator = Some(chunk_first_key);
+            self.sum_separator_byte_lengths =
+                chunk.sum_separator_byte_lengths - first_separator_len;
             self.n = chunk.len();
         };
     }
@@ -469,36 +464,36 @@ impl BranchGauge {
         self.prefix_compressed.unwrap_or(self.n)
     }
 
-    fn total_separator_lengths(&self, prefix_len: usize) -> usize {
+    fn total_separator_bit_lengths(&self, prefix_bit_len: usize) -> usize {
         match self.first_separator {
-            Some((_, first_len)) => node::compressed_separator_range_size(
-                first_len,
+            Some(ref first) => node::compressed_separator_range_bit_size(
+                first.len(),
                 self.prefix_compressed.unwrap_or(self.n),
-                self.sum_separator_lengths,
-                prefix_len,
+                self.sum_separator_byte_lengths,
+                prefix_bit_len,
             ),
             None => 0,
         }
     }
 
-    pub fn body_size_after(&mut self, key: &Key, len: usize) -> usize {
+    pub fn body_size_after(&mut self, key: &Key) -> usize {
         let p;
         let t;
-        if let Some((ref first, first_len)) = self.first_separator {
+        if let Some(ref first) = self.first_separator {
             if self.prefix_compressed.is_none() {
-                p = prefix_len(first, key);
+                p = bit_prefix_len(first, key);
             } else {
-                p = self.prefix_len;
+                p = self.prefix_bit_len;
             }
-            t = node::compressed_separator_range_size(
-                first_len,
+            t = node::compressed_separator_range_bit_size(
+                first.len(),
                 self.prefix_compressed.unwrap_or(self.n + 1),
-                self.sum_separator_lengths + len,
+                self.sum_separator_byte_lengths + key.len(),
                 p,
             );
         } else {
             t = 0;
-            p = len;
+            p = key.len() * 8;
         }
 
         branch_node::body_size(p, t, self.n + 1)
@@ -507,29 +502,29 @@ impl BranchGauge {
     pub fn body_size_after_chunk(&self, base: &BaseBranch, chunk: &KeepChunk) -> usize {
         let p;
         let t;
-        if let Some((ref first, first_len)) = self.first_separator {
+        if let Some(ref first) = self.first_separator {
             if self.prefix_compressed.is_none() {
                 let chunk_last_key = base.key(chunk.end - 1);
-                p = prefix_len(first, &chunk_last_key);
+                p = bit_prefix_len(first, &chunk_last_key);
             } else {
-                p = self.prefix_len;
+                p = self.prefix_bit_len;
             }
-            t = node::compressed_separator_range_size(
-                first_len,
+            t = node::compressed_separator_range_bit_size(
+                first.len(),
                 self.prefix_compressed.unwrap_or(self.n + chunk.len()),
-                self.sum_separator_lengths + chunk.sum_separator_lengths,
+                self.sum_separator_byte_lengths + chunk.sum_separator_byte_lengths,
                 p,
             );
         } else {
             let chunk_first_key = base.key(chunk.start);
             let chunk_last_key = base.key(chunk.end - 1);
-            let first_len = separator_len(&chunk_first_key);
+            let first_len = chunk_first_key.len();
 
-            p = prefix_len(&chunk_first_key, &chunk_last_key);
-            t = node::compressed_separator_range_size(
+            p = bit_prefix_len(&chunk_first_key, &chunk_last_key);
+            t = node::compressed_separator_range_bit_size(
                 first_len,
                 self.n + chunk.len(),
-                chunk.sum_separator_lengths - first_len,
+                chunk.sum_separator_byte_lengths - first_len,
                 p,
             );
         };
@@ -539,8 +534,8 @@ impl BranchGauge {
 
     pub fn body_size(&self) -> usize {
         branch_node::body_size(
-            self.prefix_len,
-            self.total_separator_lengths(self.prefix_len),
+            self.prefix_bit_len,
+            self.total_separator_bit_lengths(self.prefix_bit_len),
             self.n,
         )
     }
@@ -554,11 +549,10 @@ impl BranchGauge {
 #[cfg(test)]
 pub mod tests {
     use super::{
-        get_key, prefix_len, Arc, BaseBranch, BranchGauge, BranchNode, BranchNodeBuilder,
+        bit_prefix_len, get_key, Arc, BaseBranch, BranchGauge, BranchNode, BranchNodeBuilder,
         BranchUpdater, DigestResult, HandleNewBranch, Key, PageNumber, PagePool,
         BRANCH_MERGE_THRESHOLD, BRANCH_NODE_BODY_SIZE,
     };
-    use crate::beatree::ops::bit_ops::separator_len;
     use std::collections::HashMap;
 
     lazy_static::lazy_static! {
@@ -586,12 +580,12 @@ pub mod tests {
     fn gauge_stop_uncompressed() {
         let mut gauge = BranchGauge::default();
 
-        gauge.ingest_key(&vec![0; 32], 0);
+        gauge.ingest_key(&vec![0; 18]);
 
         // push items with a long (16-byte) shared prefix until just before the halfway point.
         let mut items: Vec<Key> = (1..1000u16)
             .map(|i| {
-                let mut key = vec![0; 32];
+                let mut key = vec![0; 18];
                 key[16..18].copy_from_slice(&i.to_le_bytes());
                 key
             })
@@ -600,12 +594,11 @@ pub mod tests {
         items.sort();
 
         for item in items {
-            let len = separator_len(&item);
-            if gauge.body_size_after(&item, len) >= BRANCH_MERGE_THRESHOLD {
+            if gauge.body_size_after(&item) >= BRANCH_MERGE_THRESHOLD {
                 break;
             }
 
-            gauge.ingest_key(&item, len);
+            gauge.ingest_key(&item);
         }
 
         assert!(gauge.body_size() < BRANCH_MERGE_THRESHOLD);
@@ -613,15 +606,15 @@ pub mod tests {
         // now insert an item that collapses the prefix, causing the previously underfull node to
         // become overfull.
         let unprefixed_key = vec![0xff; 32];
-        assert!(gauge.body_size_after(&unprefixed_key, 256) > BRANCH_NODE_BODY_SIZE);
+        assert!(gauge.body_size_after(&unprefixed_key) > BRANCH_NODE_BODY_SIZE);
 
         // stop compression. now we can accept more items without collapsing the prefix.
         gauge.stop_prefix_compression();
-        assert!(gauge.body_size_after(&unprefixed_key, 256) < BRANCH_NODE_BODY_SIZE);
+        assert!(gauge.body_size_after(&unprefixed_key) < BRANCH_NODE_BODY_SIZE);
     }
 
     pub fn prefixed_key(prefix_byte: u8, prefix_len: usize, i: usize) -> Key {
-        let mut k = vec![0u8; 32];
+        let mut k = vec![0u8; prefix_len + 2];
         for x in k.iter_mut().take(prefix_len) {
             *x = prefix_byte;
         }
@@ -631,17 +624,17 @@ pub mod tests {
 
     fn make_raw_branch(vs: Vec<(Key, usize)>) -> BranchNode {
         let n = vs.len();
-        let prefix_len = if vs.len() == 1 {
-            separator_len(&vs[0].0)
+
+        let prefix_bit_len = if vs.len() == 1 {
+            vs[0].0.len() * 8
         } else {
-            prefix_len(&vs[0].0, &vs[vs.len() - 1].0)
+            bit_prefix_len(&vs[0].0, &vs[vs.len() - 1].0)
         };
 
         let branch = BranchNode::new_in(&PAGE_POOL);
-        let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_len);
+        let mut builder = BranchNodeBuilder::new(branch, n, n, prefix_bit_len);
         for (k, pn) in vs {
-            let separator_len = separator_len(&k);
-            builder.push(k, separator_len, pn as u32);
+            builder.push(k, pn as u32);
         }
 
         builder.finish()
@@ -659,14 +652,13 @@ pub mod tests {
         let mut items = Vec::new();
         loop {
             let next_key = key(items.len());
-            let s_len = separator_len(&next_key);
 
-            let size = gauge.body_size_after(&next_key, s_len);
+            let size = gauge.body_size_after(&next_key);
             if !body_size_predicate(size) {
                 break;
             }
             items.push((next_key.clone(), items.len()));
-            gauge.ingest_key(&next_key, s_len);
+            gauge.ingest_key(&next_key);
         }
 
         make_branch(items)
@@ -687,15 +679,13 @@ pub mod tests {
                 break;
             };
 
-            let s_len = separator_len(&next_key);
-
-            let size = gauge.body_size_after(&next_key, s_len);
+            let size = gauge.body_size_after(&next_key);
             if size >= body_size_target {
                 break;
             }
 
             items.push((next_key.clone(), items.len()));
-            gauge.ingest_key(&next_key, s_len);
+            gauge.ingest_key(&next_key);
         }
 
         let mut branch_node = make_raw_branch(items);
@@ -735,9 +725,11 @@ pub mod tests {
             panic!()
         };
 
-        let new_branch_entry = new_branches.inner.get(&key(0)).unwrap();
+        let mut new_branches_iter = new_branches.inner.iter();
+        let (separtor, (new_branch, _)) = &new_branches_iter.next().unwrap();
+        assert!(new_branches_iter.next().is_none());
 
-        let new_branch = &new_branch_entry.0;
+        assert_eq!(separtor, &&key(0));
         assert_eq!(new_branch.n(), 500);
         assert_eq!(new_branch.node_pointer(0), 0);
         assert_eq!(new_branch.node_pointer(499), 499);
@@ -764,9 +756,11 @@ pub mod tests {
             panic!()
         };
 
-        let new_branch_entry = new_branches.inner.get(&key(0)).unwrap();
+        let mut new_branches_iter = new_branches.inner.iter();
+        let (separtor, (new_branch, _)) = &new_branches_iter.next().unwrap();
+        assert!(new_branches_iter.next().is_none());
 
-        let new_branch = &new_branch_entry.0;
+        assert_eq!(separtor, &&key(0));
         assert_eq!(new_branch.n(), 501);
         assert_eq!(new_branch.node_pointer(0), 0);
         assert_eq!(new_branch.node_pointer(500), 499);
@@ -799,7 +793,7 @@ pub mod tests {
 
         let new_branch_entry_2 = new_branches
             .inner
-            .get(&key(new_branch_1.n() as usize))
+            .get(&key(new_branch_1.n().into()))
             .unwrap();
         let new_branch_2 = &new_branch_entry_2.0;
 
@@ -830,9 +824,11 @@ pub mod tests {
             panic!()
         };
 
-        let new_branch_entry = new_branches.inner.get(&key(0)).unwrap();
+        let mut new_branches_iter = new_branches.inner.iter();
+        let (separtor, (new_branch, _)) = &new_branches_iter.next().unwrap();
+        assert!(new_branches_iter.next().is_none());
 
-        let new_branch = &new_branch_entry.0;
+        assert_eq!(separtor, &&key(0));
         assert_eq!(new_branch.n(), 499);
         assert_eq!(new_branch.node_pointer(0), 0);
         assert_eq!(new_branch.node_pointer(498), 499);
@@ -888,9 +884,12 @@ pub mod tests {
             panic!()
         };
 
-        let new_branch_entry = new_branches.inner.get(&key(0)).unwrap();
+        let mut new_branches_iter = new_branches.inner.iter();
+        let (separtor, (new_branch, _)) = &new_branches_iter.next().unwrap();
+        assert!(new_branches_iter.next().is_none());
 
-        let new_branch = &new_branch_entry.0;
+        assert_eq!(separtor, &&key(0));
+
         assert_eq!(new_branch.n() as usize, n2 + 1);
         assert_eq!(new_branch.node_pointer(0), 0);
         assert_eq!(new_branch.node_pointer(n2), (n2 - 1) as u32);
@@ -1013,7 +1012,7 @@ pub mod tests {
             let mut gauge = BranchGauge::default();
             for i in 0..new_branch_1.n() as usize {
                 let key = get_key(&new_branch_1, i);
-                gauge.ingest_key(&key, separator_len(&key))
+                gauge.ingest_key(&key)
             }
             gauge.body_size()
         };
@@ -1045,12 +1044,11 @@ pub mod tests {
         // prefix makes the body size to exceed BRANCH_NODE_BODY_SIZE.
         loop {
             let key = compressed_key(n_keys);
-
-            gauge.ingest_key(&key, separator_len(&key));
+            gauge.ingest_key(&key);
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
 
             let unc_key = uncompressed_key(n_keys + 1);
-            if gauge.body_size_after(&unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
+            if gauge.body_size_after(&unc_key) > BRANCH_NODE_BODY_SIZE {
                 updater.ingest(unc_key, Some(PageNumber((n_keys + 1) as u32)));
                 n_keys += 2;
                 break;
@@ -1087,12 +1085,11 @@ pub mod tests {
         // Ingesting keys up to just before reaching BRANCH_MERGE_THRESHOLD
         loop {
             let key = compressed_key(n_keys);
-            let len = separator_len(&key);
-            if gauge.body_size_after(&key, len) > BRANCH_MERGE_THRESHOLD {
+            if gauge.body_size_after(&key) > BRANCH_MERGE_THRESHOLD {
                 break;
             }
 
-            gauge.ingest_key(&key, len);
+            gauge.ingest_key(&key);
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
             n_keys += 1;
         }
@@ -1127,11 +1124,11 @@ pub mod tests {
         loop {
             let key = compressed_key(n_keys);
 
-            gauge.ingest_key(&key, separator_len(&key));
+            gauge.ingest_key(&key);
             updater.ingest(key, Some(PageNumber(n_keys as u32)));
 
             let unc_key = uncompressed_key(n_keys + 1);
-            if gauge.body_size_after(&unc_key, separator_len(&unc_key)) > BRANCH_NODE_BODY_SIZE {
+            if gauge.body_size_after(&unc_key) > BRANCH_NODE_BODY_SIZE {
                 updater.ingest(unc_key, Some(PageNumber((n_keys + 1) as u32)));
                 break;
             }
