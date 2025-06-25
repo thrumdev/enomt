@@ -2,12 +2,9 @@ use std::ops::Deref;
 
 use crate::beatree::{
     branch::node::{self, get_key, BRANCH_NODE_BODY_SIZE},
-    ops::{
-        bit_ops::separator_len,
-        update::{
-            branch_updater::{BaseBranch, BranchGauge},
-            BRANCH_MERGE_THRESHOLD,
-        },
+    ops::update::{
+        branch_updater::{BaseBranch, BranchGauge},
+        BRANCH_MERGE_THRESHOLD,
     },
     Key, PageNumber,
 };
@@ -31,13 +28,13 @@ pub enum BranchOp {
 // KeepChunk represents a sequence of separators contained in a branch node.
 // `start` and `end` represents the separators range where `end` is non inclusive.
 // 0-Sized chunks are not allowed, thus `start > end` must always hold.
-// `sum_separator_lengths` is the sum of the separator lengths of each separator
+// `sum_separator_byte_lengths` is the sum of the separator lengths of each separator
 // represented by the chunk itself.
 #[derive(Debug, Clone, Copy)]
 pub struct KeepChunk {
     pub start: usize,
     pub end: usize,
-    pub sum_separator_lengths: usize,
+    pub sum_separator_byte_lengths: usize,
 }
 
 impl KeepChunk {
@@ -100,11 +97,11 @@ impl BranchOpsTracker {
             let chunk = KeepChunk {
                 start,
                 end: base_compressed_end,
-                sum_separator_lengths: node::uncompressed_separator_range_size(
-                    base.node.prefix_len() as usize,
+                sum_separator_byte_lengths: node::uncompressed_separator_range_byte_size(
+                    base.node.prefix_bit_len() as usize,
                     base.node.separator_range_len(start, base_compressed_end),
                     base_compressed_end - start,
-                    separator_len(&base.key(start)),
+                    base.key(start).len(),
                 ),
             };
 
@@ -155,7 +152,7 @@ impl BranchOpsTracker {
         };
 
         let (key, pn) = base.key_value(chunk.start);
-        let separator_len = separator_len(&key);
+        let separator_len = key.len();
 
         if chunk.start == chunk.end - 1 {
             // 0-sized chunks are not allowed,
@@ -165,7 +162,7 @@ impl BranchOpsTracker {
             self.ops[index] = BranchOp::KeepChunk(KeepChunk {
                 start: chunk.start + 1,
                 end: chunk.end,
-                sum_separator_lengths: chunk.sum_separator_lengths - separator_len,
+                sum_separator_byte_lengths: chunk.sum_separator_byte_lengths - separator_len,
             });
             self.ops.insert(index, BranchOp::Insert(key, pn));
         }
@@ -209,7 +206,7 @@ impl BranchOpsTracker {
         while pos < self.ops.len() && gauge.body_size() < target {
             match &self.ops[pos] {
                 BranchOp::Insert(key, _) => {
-                    if gauge.body_size_after(key, separator_len(&key)) > BRANCH_NODE_BODY_SIZE {
+                    if gauge.body_size_after(key) > BRANCH_NODE_BODY_SIZE {
                         // Rare case: body was artifically small due to long shared prefix.
 
                         // Change the target requirement to minimize the number of non
@@ -231,7 +228,7 @@ impl BranchOpsTracker {
                     // UNWRAP: `Update` op only exist when base is Some.
                     let key = base.unwrap().key(*update_pos);
 
-                    if gauge.body_size_after(&key, separator_len(&key)) > BRANCH_NODE_BODY_SIZE {
+                    if gauge.body_size_after(&key) > BRANCH_NODE_BODY_SIZE {
                         if gauge.body_size() < BRANCH_MERGE_THRESHOLD {
                             // Replace the Update op and repeat the loop
                             // to see if `stop_prefix_compression` is activated
@@ -336,21 +333,21 @@ impl BranchOpsTracker {
             left_chunk_n_items += 1;
 
             let key = get_key(&base.node, i);
-            let separator_len = separator_len(&key);
-            let body_size_after = gauge.body_size_after(&key, separator_len);
+            let separator_len = key.len();
+            let body_size_after = gauge.body_size_after(&key);
 
             if body_size_after >= target {
                 // if an item jumps from below the target to bigger then the limit, do not use it
                 if body_size_after > limit {
                     left_chunk_n_items -= 1;
                 } else {
-                    gauge.ingest_key(&key, separator_len);
+                    gauge.ingest_key(&key);
                     left_chunk_sum_separator_lengths += separator_len;
                 }
                 break;
             }
             left_chunk_sum_separator_lengths += separator_len;
-            gauge.ingest_key(&key, separator_len);
+            gauge.ingest_key(&key);
         }
 
         // if none or all elements are taken then nothing needs to be changed
@@ -358,13 +355,13 @@ impl BranchOpsTracker {
             let left_chunk = KeepChunk {
                 start: chunk.start,
                 end: chunk.start + left_chunk_n_items,
-                sum_separator_lengths: left_chunk_sum_separator_lengths,
+                sum_separator_byte_lengths: left_chunk_sum_separator_lengths,
             };
 
             let right_chunk = KeepChunk {
                 start: chunk.start + left_chunk_n_items,
                 end: chunk.end,
-                sum_separator_lengths: chunk.sum_separator_lengths
+                sum_separator_byte_lengths: chunk.sum_separator_byte_lengths
                     - left_chunk_sum_separator_lengths,
             };
 
@@ -400,16 +397,13 @@ impl<'a> Drop for BranchOps<'a> {
 mod tests {
     use crate::beatree::{
         branch::node::{self, get_key, BRANCH_NODE_BODY_SIZE},
-        ops::{
-            bit_ops::separator_len,
-            update::{
-                branch_ops::{BranchOp, BranchOpsTracker, KeepChunk},
-                branch_updater::{
-                    tests::{make_branch, make_branch_with_body_size_target, prefixed_key},
-                    BaseBranch, BranchGauge,
-                },
-                BRANCH_BULK_SPLIT_TARGET, BRANCH_BULK_SPLIT_THRESHOLD, BRANCH_MERGE_THRESHOLD,
+        ops::update::{
+            branch_ops::{BranchOp, BranchOpsTracker, KeepChunk},
+            branch_updater::{
+                tests::{make_branch, make_branch_with_body_size_target, prefixed_key},
+                BaseBranch, BranchGauge,
             },
+            BRANCH_BULK_SPLIT_TARGET, BRANCH_BULK_SPLIT_THRESHOLD, BRANCH_MERGE_THRESHOLD,
         },
         Key, PageNumber,
     };
@@ -426,7 +420,7 @@ mod tests {
         while gauge.body_size() < BRANCH_BULK_SPLIT_THRESHOLD {
             let key = key(n_keys);
 
-            gauge.ingest_key(&key, separator_len(&key));
+            gauge.ingest_key(&key);
             ops_tracker.push_insert(key, PageNumber(n_keys as u32));
 
             n_keys += 1;
@@ -465,10 +459,10 @@ mod tests {
             .map(|i| key(i))
             .take_while(|key| {
                 let res = !rightsized;
-                rightsized = gauge.body_size_after(&key, separator_len(key)) >= target;
+                rightsized = gauge.body_size_after(&key) >= target;
 
                 if res {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                 }
                 res
             })
@@ -507,10 +501,10 @@ mod tests {
             .map(|i| (i, get_key(&branch, i)))
             .take_while(|(_i, key)| {
                 let res = !rightsized;
-                rightsized = gauge.body_size_after(&key, separator_len(key)) >= target;
+                rightsized = gauge.body_size_after(&key) >= target;
 
                 if res {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                 }
                 res
             })
@@ -556,11 +550,11 @@ mod tests {
                 KeepChunk {
                     start,
                     end,
-                    sum_separator_lengths: node::uncompressed_separator_range_size(
-                        branch.prefix_len() as usize,
+                    sum_separator_byte_lengths: node::uncompressed_separator_range_byte_size(
+                        branch.prefix_bit_len() as usize,
                         branch.separator_range_len(start, end),
                         end - start,
-                        separator_len(&get_key(&branch, start)),
+                        get_key(&branch, start).len(),
                     ),
                 }
             })
@@ -608,11 +602,10 @@ mod tests {
             .map(|i| compressed_key(i))
             .take_while(|key| {
                 let res = !rightsized;
-                rightsized =
-                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                rightsized = gauge.body_size_after(&key) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                 }
                 res
             })
@@ -657,11 +650,10 @@ mod tests {
             .map(|i| compressed_key(i))
             .take_while(|key| {
                 let res = !rightsized;
-                rightsized =
-                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                rightsized = gauge.body_size_after(&key) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                 }
                 res
             })
@@ -703,10 +695,10 @@ mod tests {
         ops_tracker.ops = (0..)
             .map(|i| compressed_key(i))
             .take_while(|key| {
-                if gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
+                if gauge.body_size_after(&key) >= BRANCH_MERGE_THRESHOLD / 2 {
                     false
                 } else {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                     true
                 }
             })
@@ -730,11 +722,10 @@ mod tests {
             .map(|i| (i, get_key(&branch, i)))
             .take_while(|(_i, key)| {
                 let res = !rightsized;
-                rightsized =
-                    gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD;
+                rightsized = gauge.body_size_after(&key) >= BRANCH_MERGE_THRESHOLD;
 
                 if res {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                 }
                 res
             })
@@ -753,8 +744,8 @@ mod tests {
         // requirement has been found has been updated to insert, but also all subsequent operations.
         for i in n_insert_op..res_ops.len() {
             assert!(matches!(
-                &res_ops[i],
-                BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
+            &res_ops[i],
+            BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
             ));
         }
 
@@ -776,10 +767,10 @@ mod tests {
         ops_tracker.ops = (0..)
             .map(|i| compressed_key(i))
             .take_while(|key| {
-                if gauge.body_size_after(&key, separator_len(key)) >= BRANCH_MERGE_THRESHOLD / 2 {
+                if gauge.body_size_after(&key) >= BRANCH_MERGE_THRESHOLD / 2 {
                     false
                 } else {
-                    gauge.ingest_key(&key, separator_len(key));
+                    gauge.ingest_key(&key);
                     true
                 }
             })
@@ -811,11 +802,11 @@ mod tests {
                 KeepChunk {
                     start,
                     end,
-                    sum_separator_lengths: node::uncompressed_separator_range_size(
-                        branch.prefix_len() as usize,
+                    sum_separator_byte_lengths: node::uncompressed_separator_range_byte_size(
+                        branch.prefix_bit_len() as usize,
                         branch.separator_range_len(start, end),
                         end - start,
-                        separator_len(&get_key(&branch, start)),
+                        get_key(&branch, start).len(),
                     ),
                 }
             })
@@ -844,8 +835,8 @@ mod tests {
         // requirement has been found has been updated to insert, but also all subsequent operations.
         for i in n_insert_op..res_ops.len() {
             assert!(matches!(
-                &res_ops[i],
-                BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
+            &res_ops[i],
+            BranchOp::Insert(k, PageNumber(_)) if *k == uncompressed_key(i - n_insert_op)
             ));
         }
 
@@ -892,11 +883,10 @@ mod tests {
 
         let mut base_node_gauge = BranchGauge::default();
 
-        let mut sum_separator_lengths = 0;
+        let mut sum_separator_byte_lengths = 0;
         for (key, _) in keys.clone() {
-            let len = separator_len(&key);
-            base_node_gauge.ingest_key(&key, len);
-            sum_separator_lengths += len;
+            base_node_gauge.ingest_key(&key);
+            sum_separator_byte_lengths += key.len();
         }
 
         let branch = make_branch(keys.clone());
@@ -905,7 +895,7 @@ mod tests {
         let chunk = KeepChunk {
             start: 0,
             end: keys.len(),
-            sum_separator_lengths,
+            sum_separator_byte_lengths,
         };
 
         // Perform a standard split
@@ -989,11 +979,10 @@ mod tests {
 
         let mut base_node_gauge = BranchGauge::default();
 
-        let mut sum_separator_lengths = 0;
+        let mut sum_separator_byte_lengths = 0;
         for (key, _) in keys.clone() {
-            let len = separator_len(&key);
-            base_node_gauge.ingest_key(&key, len);
-            sum_separator_lengths += len;
+            base_node_gauge.ingest_key(&key);
+            sum_separator_byte_lengths += key.len();
         }
 
         let branch = make_branch(keys.clone());
@@ -1004,7 +993,7 @@ mod tests {
         let chunk = KeepChunk {
             start: 1,
             end: keys.len(),
-            sum_separator_lengths,
+            sum_separator_byte_lengths,
         };
 
         let mut ops_tracker = BranchOpsTracker::new();
@@ -1044,7 +1033,7 @@ mod tests {
         let key = |i| prefixed_key(0x00, 16, i);
         let n_keys = 100;
         let keys: Vec<(Key, usize)> = (0..n_keys).map(|i| (key(i), i)).collect();
-        let sum_separator_lengths = keys.clone().iter().map(|(k, _)| separator_len(k)).sum();
+        let sum_separator_byte_lengths = keys.clone().iter().map(|(k, _)| k.len()).sum();
 
         let branch = make_branch(keys.clone());
         let base = BaseBranch::new(branch);
@@ -1052,7 +1041,7 @@ mod tests {
         let chunk = KeepChunk {
             start: 0,
             end: keys.len(),
-            sum_separator_lengths,
+            sum_separator_byte_lengths,
         };
 
         let mut ops_tracker = BranchOpsTracker::new();
@@ -1067,7 +1056,7 @@ mod tests {
         let chunk = KeepChunk {
             start: 0,
             end: 1,
-            sum_separator_lengths,
+            sum_separator_byte_lengths,
         };
         ops_tracker.ops = vec![BranchOp::KeepChunk(chunk)];
         ops_tracker.extract_insert_from_keep_chunk(&base, 0);
