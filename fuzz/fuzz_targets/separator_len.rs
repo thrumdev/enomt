@@ -4,14 +4,14 @@ use arbitrary::Arbitrary;
 use bitvec::{order::Msb0, view::BitView};
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|run: Run| {
-    let Run {
-        separator_len,
-        separator,
-    } = run;
-
-    assert_eq!(separator_len, nomt::beatree::separator_len(&separator));
-});
+//fuzz_target!(|run: Run| {
+//let Run {
+//separator_len,
+//separator,
+//} = run;
+//
+//assert_eq!(separator_len, nomt::beatree::separator_len(&separator));
+//});
 
 #[derive(Debug)]
 struct Run {

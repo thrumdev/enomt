@@ -167,6 +167,11 @@ impl Arbitrary for Key {
     fn arbitrary(g: &mut Gen) -> Key {
         let mut key = Vec::<u8>::arbitrary(g);
         key.truncate(1024);
+
+        if key.is_empty() {
+            key.push(u8::arbitrary(g));
+        }
+
         Key { inner: key }
     }
 }

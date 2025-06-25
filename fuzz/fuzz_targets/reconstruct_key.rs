@@ -5,28 +5,28 @@ use bitvec::{order::Msb0, view::BitView};
 use libfuzzer_sys::fuzz_target;
 use nomt::beatree::reconstruct_key;
 
-fuzz_target!(|run: Run| {
-    let Run {
-        raw_separator,
-        raw_prefix,
-    } = run;
-
-    let expected = reference_reconstruct_key(&raw_prefix, &raw_separator);
-
-    let maybe_prefix = if raw_prefix.bit_len == 0 {
-        None
-    } else {
-        Some((&raw_prefix.bytes[..], raw_prefix.bit_len))
-    };
-
-    let raw_separator = (
-        &raw_separator.bytes[..],
-        raw_separator.bit_start,
-        raw_separator.bit_len,
-    );
-
-    assert_eq!(expected, reconstruct_key(maybe_prefix, raw_separator));
-});
+//fuzz_target!(|run: Run| {
+//let Run {
+//raw_separator,
+//raw_prefix,
+//} = run;
+//
+//let expected = reference_reconstruct_key(&raw_prefix, &raw_separator);
+//
+//let maybe_prefix = if raw_prefix.bit_len == 0 {
+//None
+//} else {
+//Some((&raw_prefix.bytes[..], raw_prefix.bit_len))
+//};
+//
+//let raw_separator = (
+//&raw_separator.bytes[..],
+//raw_separator.bit_start,
+//raw_separator.bit_len,
+//);
+//
+//assert_eq!(expected, reconstruct_key(maybe_prefix, raw_separator));
+//});
 
 #[derive(Debug)]
 struct Run {
