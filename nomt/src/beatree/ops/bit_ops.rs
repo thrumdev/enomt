@@ -37,7 +37,6 @@ pub fn bit_prefix_len(key_a: &Key, key_b: &Key) -> usize {
     bit_len
 }
 
-// TODO: testing
 pub fn byte_prefix_len(key_a: &Key, key_b: &Key) -> usize {
     key_a
         .iter()
@@ -447,6 +446,23 @@ mod tests {
     }
 
     #[test]
+    fn reconstruct_key_longer_separator() {
+        // test separator bigger then 256
+        for separator_bit_len in 256..1024 * 8 {
+            let separator_bit_start = 0;
+            let separator_byte_len = ((separator_bit_len as usize + 7) / 8).next_multiple_of(8);
+
+            let separator_bytes = vec![170; separator_byte_len];
+
+            let separator = (&separator_bytes[..], separator_bit_start, separator_bit_len);
+            let expected_key = reference_reconstruct_key(None, separator);
+            let key = super::reconstruct_key(None, separator);
+
+            assert_eq!(expected_key, key);
+        }
+    }
+
+    #[test]
     fn reconstruct_key_garbage_in_last_remainder() {
         // There could be the possibility of having garbage in the last remainder
         for left_and_right in 0..2 {
@@ -566,10 +582,10 @@ mod tests {
 
     #[test]
     fn separate() {
-        for prefix_bit_len in 0..256 {
-            let mut a = vec![255; 32];
+        for prefix_bit_len in (0..1024 * 8).filter(|x| x % 3 == 0) {
+            let mut a = vec![255; 1024];
             a.view_bits_mut::<Msb0>()[prefix_bit_len..].fill(false);
-            let b = vec![255; 32];
+            let b = vec![255; 1024];
 
             let expected_res = reference_separate(&a, &b);
             let res = super::separate(&a, &b);
@@ -580,15 +596,17 @@ mod tests {
 
     #[test]
     fn prefix_len() {
-        for prefix_bit_len in 0..256 {
-            let mut a = vec![255; 32];
+        for prefix_bit_len in 0..1024 * 8 {
+            let mut a = vec![255; 1024];
             a.view_bits_mut::<Msb0>()[prefix_bit_len..].fill(false);
-            let b = vec![255; 32];
+            let b = vec![255; 1024];
 
-            let expected_res = reference_prefix_len(&a, &b);
-            let res = super::bit_prefix_len(&a, &b);
+            dbg!(prefix_bit_len);
+            let bit_res = super::bit_prefix_len(&a, &b);
+            let byte_res = super::byte_prefix_len(&a, &b);
 
-            assert_eq!(expected_res, res);
+            assert_eq!(prefix_bit_len, bit_res);
+            assert_eq!(prefix_bit_len / 8, byte_res);
         }
     }
 }
