@@ -4,7 +4,7 @@ use crate::{
         branch::{self, node::BranchNode, BRANCH_NODE_BODY_SIZE, BRANCH_NODE_SIZE},
         leaf::{
             self,
-            node::{LeafNode, MAX_KEY_LEN, MAX_LEAF_VALUE_SIZE},
+            node::{LeafNode, MAX_KEY_LEN, MAX_LEAF_KEY_AND_VALUE_SIZE},
         },
         leaf_cache::LeafCache,
         ops::{
@@ -121,7 +121,12 @@ fn init_beatree() -> TreeData {
     let initial_items: BTreeMap<Vec<u8>, Vec<u8>> = KEYS
         .iter()
         .cloned()
-        .map(|key| (key, vec![170u8; rng.gen_range(500..MAX_LEAF_VALUE_SIZE)]))
+        .map(|key| {
+            let key_len = key.len();
+            let value_start = std::cmp::min(500, MAX_LEAF_KEY_AND_VALUE_SIZE - key_len);
+            let value_end = std::cmp::max(501, MAX_LEAF_KEY_AND_VALUE_SIZE - key_len);
+            (key, vec![170u8; rng.gen_range(value_start..value_end)])
+        })
         .collect();
 
     let leaf_store = Store::open(&PAGE_POOL, ln_fd.clone(), PageNumber(1), None).unwrap();
@@ -383,8 +388,11 @@ fn leaf_stage_inner(input: StageInputs) -> TestResult {
     let insertions: BTreeMap<_, _> = input
         .insertions
         .into_iter()
-        // rescale raw_size to be between 0 and MAX_LEAF_VALUE_SIZE
-        .map(|(k, raw_size)| (k, rescale(raw_size, 1, MAX_LEAF_VALUE_SIZE)))
+        // rescale raw_size to be between 0 and MAX_LEAF_KEY_AND_VALUE_SIZE
+        .map(|(k, raw_size)| {
+            let k_len = k.inner.len();
+            (k, rescale(raw_size, 1, MAX_LEAF_KEY_AND_VALUE_SIZE - k_len))
+        })
         .map(|(k, size)| (k.inner, ValueChange::Insert(vec![170; size])))
         .collect();
 
