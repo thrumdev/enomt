@@ -4,7 +4,7 @@ use branch::BRANCH_NODE_SIZE;
 use crossbeam_channel::{Receiver, Sender};
 use imbl::OrdMap;
 
-use leaf::node::MAX_LEAF_VALUE_SIZE;
+use leaf::node::{MAX_KEY_SIZE, MAX_LEAF_KEY_AND_VALUE_SIZE};
 use nomt_core::trie::ValueHash;
 use ops::overflow;
 use parking_lot::{ArcMutexGuard, Condvar, Mutex, RwLock};
@@ -346,16 +346,30 @@ pub enum ValueChange {
 impl ValueChange {
     /// Create a [`ValueChange`] from an option, determining whether to use the normal or overflow
     /// variant based on size.
-    pub fn from_option<T: crate::ValueHasher>(maybe_value: Option<Vec<u8>>) -> Self {
+    pub fn from_option<T: crate::ValueHasher>(
+        key: &Key,
+        maybe_value: Option<Vec<u8>>,
+    ) -> Result<Self> {
+        if key.len() > MAX_KEY_SIZE {
+            return Err(anyhow::anyhow!(
+                "Key exceeds limit: {}B > {}B",
+                key.len(),
+                MAX_KEY_SIZE
+            ));
+        }
+
         match maybe_value {
-            None => ValueChange::Delete,
-            Some(v) => Self::insert::<T>(v),
+            Some(val) if key.len() + val.len() > MAX_LEAF_KEY_AND_VALUE_SIZE => Ok(
+                Self::insert::<T>(val, MAX_LEAF_KEY_AND_VALUE_SIZE - key.len()),
+            ),
+            Some(val) => Ok(Self::insert::<T>(val, MAX_LEAF_KEY_AND_VALUE_SIZE)),
+            None => Ok(ValueChange::Delete),
         }
     }
 
     /// Create an insertion, determining whether to use the normal or overflow variant based on size.
-    pub fn insert<T: crate::ValueHasher>(v: Vec<u8>) -> Self {
-        if v.len() > MAX_LEAF_VALUE_SIZE {
+    pub fn insert<T: crate::ValueHasher>(v: Vec<u8>, max_value_size: usize) -> Self {
+        if v.len() > max_value_size {
             let value_hash = T::hash_value(&v);
             ValueChange::InsertOverflow(v, value_hash)
         } else {
