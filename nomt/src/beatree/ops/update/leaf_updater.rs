@@ -338,7 +338,7 @@ impl LeafUpdater {
             .unwrap_or(vec![0])
     }
 
-    // Starting from the specified index `from` within `self.ops`, consume and possibly
+    // Starting from the specified index `ops_start` within `self.ops`, consume and possibly
     // change the operations themselves to achieve a sequence of operations that are able to
     // construct a Leaf node with the specified target size.
     //
@@ -349,14 +349,12 @@ impl LeafUpdater {
     // below the target is when there is an item which causes the size to jump
     // from below to target to overfull.
     //
-    // Given the fact that the maximum value size is `MAX_LEAF_VALUE_SIZE`
+    // Given the fact that the maximum key and value size is `MAX_LEAF_KEY_AND_VALUE_SIZE`
     // the previous scenario will only create nodes in the following range of body_size:
-    // `[LEAF_NODE_BODY_SIZE - MAX_LEAF_VALUE_SIZE .. LEAF_NODE_BODY_SIZE]`
+    // `[LEAF_NODE_BODY_SIZE - MAX_LEAF_KEY_AND_VALUE_SIZE .. LEAF_NODE_BODY_SIZE]`
     //
     // This means that the half-full requirement will always be respected
-    // because `LEAF_NODE_BODY_SIZE - MAX_LEAF_VALUE_SIZE > LEAF_MERGE_THRESHOLD`.
-    //
-    // TODO: change description
+    // because `LEAF_NODE_BODY_SIZE - MAX_LEAF_KEY_AND_VALUE_SIZE > LEAF_MERGE_THRESHOLD`.
     //
     // SAFETY: This function is expected to be called in a loop until None is returned.
     fn consume_and_update_until(
@@ -367,13 +365,15 @@ impl LeafUpdater {
         assert!(target >= LEAF_MERGE_THRESHOLD);
         let mut pos = ops_start;
         let mut gauge = LeafGauge::default();
-        let mut from_below_target_to_overfull = false;
 
         while pos < self.ops.len() && gauge.body_size() < target {
             match &self.ops[pos] {
                 LeafOp::Insert(key, val, _) => {
                     if gauge.body_size_after(key, val.len()) > LEAF_NODE_BODY_SIZE {
-                        // Rare case: body was artifically small due to long shared prefix.
+                        // This could happen when either the target is set really high,
+                        // higher than `LEAF_NODE_BODY_SIZE - MAX_LEAF_KEY_AND_VALUE_SIZE`
+                        // or, in rare cases, the previous set of key-values was artifically
+                        // small due to a long shared prefix.
 
                         // Change the target requirement to minimize the number of non
                         // compressed separators saved into one node.
@@ -383,17 +383,8 @@ impl LeafUpdater {
                             // Start applying items without prefix compression. we assume items are less
                             // than half the body size, so the item under pos should apply cleanly.
                             gauge.stop_prefix_compression();
-
-                            if gauge.body_size_after(key, val.len()) > LEAF_NODE_BODY_SIZE {
-                                // Very special case where even after stopping prefix compression
-                                // an item still cause underflow to overflow
-                                // TODO: is this solution ok? Are we creating it anyway and thus having nodes
-                                // that do not fulfill the half full requirement?
-                                from_below_target_to_overfull = true;
-                                break;
-                            }
                         } else {
-                            // The initial target was not reached, but BRANCH_MERGE_THRESHOLD was met. To avoid
+                            // The initial target was not reached, but LEAF_MERGE_THRESHOLD was met. To avoid
                             // inserting compressed separators, let's build the node with the operations collected until now.
                             break;
                         }
@@ -440,7 +431,7 @@ impl LeafUpdater {
         // Use `pos - from` ops only if they create a node with a body size bigger than the target
         // or accept a size below the target only if an item causes the node to transition
         // from a body size below the target to overfull.
-        if gauge.body_size() >= target || from_below_target_to_overfull {
+        if gauge.body_size() >= target {
             Some((pos - ops_start, gauge))
         } else {
             self.gauge = gauge;
@@ -796,7 +787,7 @@ impl LeafGauge {
 pub mod tests {
     use crate::beatree::{
         branch::BRANCH_NODE_SIZE,
-        leaf::node::{body_size, MAX_LEAF_VALUE_SIZE},
+        leaf::node::{body_size, MAX_LEAF_KEY_AND_VALUE_SIZE},
         ops::{
             search_leaf,
             update::{leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD},
@@ -1288,7 +1279,12 @@ pub mod tests {
 
         updater.ingest(key(1), Some(vec![1; 1300]), false, |_| {});
         updater.ingest(key(2), Some(vec![1; 650]), false, |_| {});
-        updater.ingest(key(3), Some(vec![1; MAX_LEAF_VALUE_SIZE]), false, |_| {});
+        updater.ingest(
+            key(3),
+            Some(vec![1; MAX_LEAF_KEY_AND_VALUE_SIZE - key(3).len()]),
+            false,
+            |_| {},
+        );
         updater.ingest(key(4), Some(vec![1; 678]), false, |_| {});
 
         // The first two sum up to a body_size of 2018 which is less than

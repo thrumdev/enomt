@@ -50,7 +50,10 @@ use crate::{
 pub const LEAF_NODE_BODY_SIZE: usize = PAGE_SIZE - 6;
 
 /// The maximum value size before overflow pages are used.
-pub const MAX_LEAF_VALUE_SIZE: usize = (LEAF_NODE_BODY_SIZE / 3) - 32;
+pub const MAX_LEAF_KEY_AND_VALUE_SIZE: usize = LEAF_NODE_BODY_SIZE / 3;
+
+/// The maximum key size.
+pub const MAX_KEY_SIZE: usize = 1 << 10;
 
 /// The maximum number of node pointers which may appear directly in an overflow cell.
 ///
@@ -61,7 +64,7 @@ pub const MAX_OVERFLOW_CELL_NODE_POINTERS: usize = 15;
 pub const MAX_OVERFLOW_VALUE_SIZE: usize = 1 << 29;
 
 /// We use the three high bit to encode the msb of the key len.
-const MSBS_KEY_LEN_BIT: u8 = 0b11100000;
+const MS_KEY_LEN_BITS: u8 = 0b11100000;
 
 /// We use the fifth bit to encode whether a cell is an overflow cell.
 const OVERFLOW_BIT: u8 = 0b00010000;
@@ -413,14 +416,14 @@ pub fn compressed_key_range_size(
 
 // get the key length from the cell_pointer.
 fn key_len(cell_pointer: &[u8; 3]) -> usize {
-    u16::from_le_bytes([cell_pointer[0], (cell_pointer[2] & MSBS_KEY_LEN_BIT) >> 5]) as usize
+    u16::from_le_bytes([cell_pointer[0], (cell_pointer[2] & MS_KEY_LEN_BITS) >> 5]) as usize
 }
 
 // get the cell offset and whether the cell is an overflow cell.
 fn offset(cell_pointer: &[u8; 3]) -> usize {
     u16::from_le_bytes([
         cell_pointer[1],
-        cell_pointer[2] & !MSBS_KEY_LEN_BIT & !OVERFLOW_BIT,
+        cell_pointer[2] & !MS_KEY_LEN_BITS & !OVERFLOW_BIT,
     ]) as usize
 }
 
@@ -441,7 +444,7 @@ fn encode_cell_pointer(cell_pointer: &mut [u8; 3], key_len: usize, offset: usize
     if overflow {
         cell_pointer[2] |= OVERFLOW_BIT;
     }
-    cell_pointer[2] |= (key_len[1] & (MSBS_KEY_LEN_BIT >> 5)) << 5;
+    cell_pointer[2] |= (key_len[1] & (MS_KEY_LEN_BITS >> 5)) << 5;
 }
 
 #[cfg(test)]

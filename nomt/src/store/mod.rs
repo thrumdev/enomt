@@ -326,9 +326,14 @@ pub struct ValueTransaction {
 
 impl ValueTransaction {
     /// Write a value to flat storage.
-    pub fn write_value<T: ValueHasher>(&mut self, path: beatree::Key, value: Option<Vec<u8>>) {
-        self.batch
-            .push((path, beatree::ValueChange::from_option::<T>(value)))
+    pub fn write_value<T: ValueHasher>(
+        &mut self,
+        path: beatree::Key,
+        value: Option<Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let value_change = beatree::ValueChange::from_option::<T>(&path, value)?;
+        self.batch.push((path, value_change));
+        Ok(())
     }
 
     /// Iterate all the changed values.
