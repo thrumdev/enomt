@@ -22,9 +22,6 @@ mod update;
 pub use reconstruction::reconstruct;
 pub use update::update;
 
-#[cfg(test)]
-pub use update::make_leaf;
-
 /// Do a partial lookup of the key in the beatree.
 ///
 /// This determines the leaf store page number which might store the associated value, or `None`
@@ -103,7 +100,7 @@ pub fn lookup_blocking(
 /// Binary search a branch node for the child node containing the key. This returns the last child
 /// node pointer whose separator is less than or equal to the given key.
 pub fn search_branch(branch: &BranchNode, key: &Key) -> Option<(usize, PageNumber)> {
-    let (found, pos) = find_key_pos(branch, key, None);
+    let (found, pos) = branch_find_key_pos(branch, key, None);
 
     if found {
         return Some((pos, branch.node_pointer(pos).into()));
@@ -124,23 +121,26 @@ pub fn search_leaf<'a>(leaf: &'a LeafNode, key: &Key) -> Option<(&'a [u8], bool)
     Some(leaf.value(index))
 }
 
-// TODO: updte to branch_find_key_pos
 // Binary search for a key within a branch node.
 // Accept a field to override the starting point of the binary search.
 // It returns true and the index of the specified key,
 // or false and the index containing the first key greater than the specified one.
-pub fn find_key_pos(branch: &BranchNode, key: &Key, low: Option<usize>) -> (bool, usize) {
+pub fn branch_find_key_pos(branch: &BranchNode, key: &Key, low: Option<usize>) -> (bool, usize) {
     let prefix = branch.prefix();
     let prefix_len = prefix.len();
     let n = branch.n() as usize;
     let prefix_compressed = branch.prefix_compressed() as usize;
 
-    if (key.len() * 8) < prefix_len {
-        todo!("also branch happen to have separators smaller than prefixes");
-    }
+    let key_shorter_than_prefix = (key.len() * 8) < prefix_len;
+    let len = std::cmp::min(key.len() * 8, prefix_len);
 
-    match key.view_bits::<Msb0>()[..prefix_len].cmp(prefix) {
+    // The key is infinetly padded with zeros so if the key is equal to a portion
+    // of the prefix it means that all other bits are zero ans thus smaller than
+    // any other key in the leaf which shares the same bits or if not compressed is highher
+
+    match key.view_bits::<Msb0>()[..len].cmp(&prefix[..len]) {
         Ordering::Less => return (false, 0),
+        Ordering::Equal if key_shorter_than_prefix => return (false, 0),
         Ordering::Greater if n == prefix_compressed => return (false, n),
         Ordering::Equal | Ordering::Greater => {}
     }
@@ -158,22 +158,23 @@ pub fn leaf_find_key_pos(leaf: &LeafNode, key: &Key, low: Option<usize>) -> (boo
     let prefix_compressed = leaf.prefix_compressed() as usize;
     let low = low.unwrap_or(0);
 
-    // The key that is being searched can be smaller than the prefix
-    if key.len() < prefix_len {
-        let len = std::cmp::min(key.len(), prefix_len);
-        // The key is infinetly padded with zeros so if the key is equal to a portion
-        // of the prefix it means that all other bits are zero ans thus smaller than
-        // any other key in the leaf which shares the same bits or if not compressed is highher
-        match key[..len].cmp(&prefix[..len]) {
-            Ordering::Less | Ordering::Equal => return (false, 0),
-            Ordering::Greater => return (false, n),
-        }
-    }
+    let key_shorter_than_prefix = key.len() < prefix_len;
+    let len = std::cmp::min(key.len(), prefix_len);
 
-    let (start, end, key) = match key[..prefix_len].cmp(prefix) {
+    // The key is infinetly padded with zeros so if the key is equal to a portion
+    // of the prefix it means that all other bits are zero ans thus smaller than
+    // any other key in the leaf which shares the same bits or if not compressed is highher
+
+    // Key will be the entire key or without the prefix if we expect to compare
+    // it with compressed or non compressed items.
+    let (start, end, key) = match &key[..len].cmp(&prefix[..len]) {
         std::cmp::Ordering::Less => return (false, 0),
+        std::cmp::Ordering::Equal if key_shorter_than_prefix => return (false, 0),
         std::cmp::Ordering::Greater if n == prefix_compressed => return (false, n),
         std::cmp::Ordering::Greater => {
+            // Even if a key is shorter than the prefix, it could still be larger
+            // than the compressed items in the prefix. Therefore, it must be compared
+            // with non-compressed ones.
             let from = std::cmp::max(prefix_compressed, low);
             (from, n, &key[..])
         }
@@ -183,10 +184,10 @@ pub fn leaf_find_key_pos(leaf: &LeafNode, key: &Key, low: Option<usize>) -> (boo
         }
     };
 
-    // TODO: this could be a little bit more efficient maybe by not calling
-    // raw_key which cast every time the cell_pointers from memory but doing it once and use it
-    // all the time, so it should be in cache
-    binary_search(start, end, |index| key.cmp(leaf.raw_key(index)))
+    let cell_pointers = leaf.cell_pointers();
+    binary_search(start, end, |index| {
+        key.cmp(leaf.raw_key(cell_pointers, index))
+    })
 }
 
 // If there are available keys in the node, then it returns the index

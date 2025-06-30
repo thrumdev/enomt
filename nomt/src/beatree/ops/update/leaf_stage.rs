@@ -608,8 +608,6 @@ fn run_worker(
         };
 
         let delete_overflow = |overflow_cell: &[u8]| overflow_deleted.push(overflow_cell.to_vec());
-        // TODO: can this clone be avoided by std::mem::take(key)?
-        // Is this thread the only owner of this portion of the changeset?
         leaf_updater.ingest(key.clone(), value_change, overflow, delete_overflow);
     }
 

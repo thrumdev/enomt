@@ -345,12 +345,10 @@ impl LiveOverlay {
     }
 
     /// Iterate all value changes within the given key bounds.
-    // TODO: start and end KeyPaths require a lot of clones
-    // on the caller side. Can this be handled without owning the start and end?
     pub(super) fn value_iter<'a>(
         &'a self,
-        start: KeyPath,
-        end: Option<KeyPath>,
+        start: &'a KeyPath,
+        end: Option<&'a KeyPath>,
     ) -> impl Iterator<Item = (KeyPath, &'a ValueChange)> {
         self.parent
             .as_ref()
@@ -358,7 +356,7 @@ impl LiveOverlay {
                 parent
                     .index
                     .values
-                    .range(start..)
+                    .range(start.clone()..)
                     .take_while(move |(k, _)| end.as_ref().map_or(true, |end| end > k))
                     .filter_map(|(k, seqn)| seqn.checked_sub(self.min_seqn).map(|s| (k, s)))
                     .map(|(k, seqn_diff)| (k.clone(), self.value_inner(k, seqn_diff)))
