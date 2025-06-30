@@ -3,7 +3,7 @@ use std::{ops::Range, sync::Arc};
 use crate::beatree::{
     allocator::PageNumber,
     branch::{self as branch_node, node, BranchNode, BranchNodeBuilder, BRANCH_NODE_BODY_SIZE},
-    ops::{bit_ops::bit_prefix_len, find_key_pos},
+    ops::{bit_ops::bit_prefix_len, branch_find_key_pos},
     Key,
 };
 use crate::io::PagePool;
@@ -36,7 +36,7 @@ impl BaseBranch {
             return None;
         }
 
-        let (found, pos) = find_key_pos(&self.node, key, Some(self.low));
+        let (found, pos) = branch_find_key_pos(&self.node, key, Some(self.low));
 
         if found {
             // the key was present return its index and point to the right after key
@@ -244,7 +244,6 @@ fn build_branch(
         // SAFETY: If no base is avaialble, then all ops are expected to be `BranchOp::Insert`
         for op in ops {
             match op {
-                // TODO: this clone could be replaced with a simple std::mem::take
                 BranchOp::Insert(key, pn) => builder.push(key.clone(), pn.0),
                 _ => panic!("Unextected BranchOp creating a BranchNode without BaseBranch"),
             }
@@ -261,6 +260,7 @@ fn build_branch(
     // further allocations
     let apply_chunk = |builder: &mut BranchNodeBuilder,
                        base_range: Range<usize>,
+                       ops: &[BranchOp],
                        ops_range: Range<usize>| {
         let n_compressed_left = gauge
             .prefix_compressed_items()
@@ -307,6 +307,7 @@ fn build_branch(
                     apply_chunk(
                         &mut builder,
                         pending_keep_chunk.take().unwrap(),
+                        &ops,
                         pending_ops_range.take().unwrap(),
                     );
                 }
@@ -324,6 +325,7 @@ fn build_branch(
                         apply_chunk(
                             &mut builder,
                             pending_keep_chunk.take().unwrap(),
+                            &ops,
                             pending_ops_range.take().unwrap(),
                         );
                     }
@@ -342,6 +344,7 @@ fn build_branch(
                         apply_chunk(
                             &mut builder,
                             pending_keep_chunk.take().unwrap(),
+                            &ops,
                             pending_ops_range.take().unwrap(),
                         );
                     }
@@ -351,8 +354,6 @@ fn build_branch(
 
         match &ops[i] {
             BranchOp::Insert(key, pn) => {
-                // TODO: this clone should be possible to be substituted with a simple std::mem::take
-                // builder.push(std::mem::take(key), separator_len(key), pn.0);
                 builder.push(key.clone(), pn.0);
                 i += 1;
             }
@@ -370,7 +371,7 @@ fn build_branch(
     }
 
     if let (Some(range), Some(ops_range)) = (pending_keep_chunk, pending_ops_range) {
-        apply_chunk(&mut builder, range, ops_range);
+        apply_chunk(&mut builder, range, &ops, ops_range);
     }
 
     builder.finish()

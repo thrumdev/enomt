@@ -4,7 +4,7 @@ use crate::beatree::{
     leaf::node::{self as leaf_node, LeafBuilder, LeafNode, LEAF_NODE_BODY_SIZE},
     ops::{
         bit_ops::{byte_prefix_len, separate},
-        leaf_find_key_pos, overflow,
+        leaf_find_key_pos,
     },
     Key,
 };
@@ -54,10 +54,6 @@ impl BaseLeaf {
 
     fn key(&self, i: usize) -> Key {
         self.node.key(i)
-    }
-
-    fn key_len(&self, i: usize) -> usize {
-        self.node.key_len(i)
     }
 
     fn value(&self, i: usize) -> (&[u8], bool) {
@@ -250,7 +246,6 @@ impl LeafUpdater {
             return;
         }
 
-        // TODO: maybe abstract into something similar to BranchTracker
         let base_compressed_end = std::cmp::min(end, base.node.prefix_compressed() as usize);
 
         if start != base_compressed_end {
@@ -790,7 +785,9 @@ pub mod tests {
         leaf::node::{body_size, MAX_LEAF_KEY_AND_VALUE_SIZE},
         ops::{
             search_leaf,
-            update::{leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD},
+            update::{
+                branch_updater::tests::prefixed_key, leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD,
+            },
         },
     };
 
@@ -821,9 +818,12 @@ pub mod tests {
         }
     }
 
-    // TODO: add more tests which uses var len keys and stop prefix compression
     fn key(x: u8) -> Key {
         vec![x; 32]
+    }
+
+    fn var_len_key(x: u8, n: usize) -> Key {
+        vec![x; n]
     }
 
     pub fn make_leaf(vs: Vec<(Key, Vec<u8>, bool)>) -> Arc<LeafNode> {
@@ -849,9 +849,49 @@ pub mod tests {
         Arc::new(builder.finish())
     }
 
+    pub fn make_leaf_with_non_compressed(
+        prefixed_key_1: impl Fn(usize) -> Key,
+        prefixed_key_2: impl Fn(usize) -> Key,
+    ) -> Arc<LeafNode> {
+        let mut gauge = LeafGauge::default();
+
+        let mut prefix_compressed = 0;
+        loop {
+            let key = prefixed_key_1(prefix_compressed);
+
+            if gauge.body_size_after(&key, 8) > LEAF_MERGE_THRESHOLD {
+                break;
+            }
+
+            gauge.ingest_item(&key, 8);
+            prefix_compressed += 1;
+        }
+
+        gauge.stop_prefix_compression();
+        gauge.ingest_item(&prefixed_key_2(0), 8);
+
+        let mut builder = LeafBuilder::new(
+            &PAGE_POOL,
+            dbg!(gauge.n),
+            gauge.prefix_len,
+            gauge.prefix_compressed_items(),
+            gauge.compressed_keys_len(),
+            gauge.sum_values_len,
+        );
+
+        for i in 0..prefix_compressed {
+            builder.push(&prefixed_key_1(i), &vec![i as u8; 8][..], false);
+        }
+        builder.push(&prefixed_key_2(0), &vec![255; 8][..], false);
+
+        let leaf = builder.finish();
+        assert_eq!(leaf.n(), prefix_compressed + 1);
+        assert_eq!(leaf.prefix_compressed(), prefix_compressed);
+        Arc::new(leaf)
+    }
+
     #[test]
     fn build_leaf() {
-        let var_len_key = |i: u8, n| vec![i; n];
         let key_values = vec![
             (var_len_key(1, 3), vec![1u8; 126]),
             (var_len_key(3, 10), vec![1u8; 78]),
@@ -890,7 +930,6 @@ pub mod tests {
             separator: key(1),
         };
 
-        //assert_eq!(base.find_key(&key(0)), None);
         assert_eq!(base.find_key(&key(0)), Some((false, 0)));
         assert_eq!(base.find_key(&key(1)), Some((true, 0)));
         assert_eq!(base.find_key(&key(2)), Some((false, 1)));
@@ -912,6 +951,99 @@ pub mod tests {
     }
 
     #[test]
+    fn leaf_binary_search_non_compressed() {
+        let prefixed_key = |prefix_byte: u8, i: usize| -> Key {
+            let prefix_len = 600;
+            let mut k = vec![0u8; prefix_len + 2];
+            for x in k.iter_mut().take(prefix_len) {
+                *x = prefix_byte;
+            }
+            k[prefix_len..prefix_len + 2].copy_from_slice(&(i as u16).to_be_bytes());
+            k
+        };
+
+        let key1 = |i| prefixed_key(0x00, i);
+        let key2 = |i| prefixed_key(0x0F, i);
+        let leaf = make_leaf_with_non_compressed(key1, key2);
+        let prefix_compressed = leaf.prefix_compressed();
+
+        let mut base = BaseLeaf {
+            node: leaf.clone(),
+            low: 0,
+            separator: key2(1),
+        };
+
+        assert_eq!(base.find_key(&key1(0)), Some((true, 0)));
+        assert_eq!(
+            base.find_key(&key1(prefix_compressed - 1)),
+            Some((true, prefix_compressed - 1))
+        );
+        assert_eq!(
+            base.find_key(&key1(prefix_compressed)),
+            Some((false, prefix_compressed))
+        );
+        assert_eq!(base.find_key(&key2(0)), Some((true, prefix_compressed)));
+
+        let mut base = BaseLeaf {
+            node: leaf.clone(),
+            low: 0,
+            separator: key2(1),
+        };
+        assert_eq!(
+            base.find_key(&key2(1)),
+            Some((false, prefix_compressed + 1))
+        );
+    }
+
+    #[test]
+    fn leaf_binary_key_smaller_prefix() {
+        let prefixed_key = |prefix_byte: u8, prefix_len: usize, i: usize| -> Key {
+            let mut k = vec![0u8; prefix_len + 2];
+            for x in k.iter_mut().take(prefix_len) {
+                *x = prefix_byte;
+            }
+            k[prefix_len..prefix_len + 2].copy_from_slice(&(i as u16).to_be_bytes());
+            k
+        };
+
+        let key1 = |i| prefixed_key(0x00, 600, i);
+        let key2 = |i| prefixed_key(0x0F, 600, i);
+
+        let leaf = make_leaf_with_non_compressed(key1, key2);
+        let prefix_compressed = leaf.prefix_compressed();
+
+        let mut base = BaseLeaf {
+            node: leaf.clone(),
+            low: 0,
+            separator: key2(1),
+        };
+        // Keys that are shorter and smaller than the prefix are expected to be at the beginning
+        assert_eq!(base.find_key(&prefixed_key(0x00, 300, 0)), Some((false, 0)));
+
+        let mut base = BaseLeaf {
+            node: leaf.clone(),
+            low: 0,
+            separator: key2(1),
+        };
+        // Key shorter and bigger than prefix but smaller than non compressed keys
+        assert_eq!(
+            base.find_key(&prefixed_key(0x0E, 300, 0)),
+            Some((false, prefix_compressed))
+        );
+
+        let mut base = BaseLeaf {
+            node: leaf.clone(),
+            low: 0,
+            separator: key2(1),
+        };
+        // Key shorter and bigger than prefix and non compressed key
+        assert_eq!(
+            base.find_key(&prefixed_key(0xF0, 300, 0)),
+            Some((false, prefix_compressed + 1))
+        );
+    }
+
+    #[test]
     fn is_in_scope() {
         let mut updater = LeafUpdater::new(PAGE_POOL.clone(), None, None);
         assert!(updater.is_in_scope(&key(0xff)));
@@ -925,10 +1057,14 @@ pub mod tests {
 
     #[test]
     fn update() {
+        let key_1 = var_len_key(1, 17);
+        let key_2 = var_len_key(2, 127);
+        let key_3 = var_len_key(3, 86);
+
         let leaf = make_leaf(vec![
-            (key(1), vec![1u8; 1000], false),
-            (key(2), vec![1u8; 1000], false),
-            (key(3), vec![1u8; 1000], false),
+            (key_1.clone(), vec![1u8; 1000], false),
+            (key_2.clone(), vec![1u8; 1000], false),
+            (key_3.clone(), vec![1u8; 1000], false),
         ]);
 
         let mut updater = LeafUpdater::new(
@@ -936,33 +1072,38 @@ pub mod tests {
             Some(BaseLeaf {
                 node: leaf,
                 low: 0,
-                separator: key(1),
+                separator: key_1.clone(),
             }),
             None,
         );
         let mut new_leaves = TestHandleNewLeaf::default();
 
-        updater.ingest(key(2), Some(vec![2u8; 1000]), false, |_| {});
+        updater.ingest(key_2.clone(), Some(vec![2u8; 1000]), false, |_| {});
         let DigestResult::Finished = updater.digest(&mut new_leaves).unwrap() else {
             panic!()
         };
 
-        let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
+        let new_leaf_entry = new_leaves.inner.get(&key_1).unwrap();
 
         let new_leaf = &new_leaf_entry.0;
 
         assert_eq!(new_leaf.n(), 3);
-        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 1000]);
-        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[2u8; 1000]);
-        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key_1).unwrap().0, &[1u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key_2).unwrap().0, &[2u8; 1000]);
+        assert_eq!(search_leaf(new_leaf, &key_3).unwrap().0, &[1u8; 1000]);
     }
 
     #[test]
     fn insert_rightsized() {
+        let key_1 = var_len_key(1, 30);
+        let key_2 = var_len_key(2, 42);
+        let key_3 = var_len_key(3, 18);
+        let key_4 = var_len_key(4, 29);
+
         let leaf = make_leaf(vec![
-            (key(1), vec![1u8; 900], false),
-            (key(2), vec![1u8; 900], false),
-            (key(3), vec![1u8; 900], false),
+            (key_1.clone(), vec![1u8; 900], false),
+            (key_2.clone(), vec![1u8; 900], false),
+            (key_3.clone(), vec![1u8; 900], false),
         ]);
 
         let mut updater = LeafUpdater::new(
@@ -970,34 +1111,39 @@ pub mod tests {
             Some(BaseLeaf {
                 node: leaf,
                 low: 0,
-                separator: key(1),
+                separator: key_1.clone(),
             }),
             None,
         );
         let mut new_leaves = TestHandleNewLeaf::default();
 
-        updater.ingest(key(4), Some(vec![1u8; 900]), false, |_| {});
+        updater.ingest(key_4.clone(), Some(vec![1u8; 900]), false, |_| {});
         let DigestResult::Finished = updater.digest(&mut new_leaves).unwrap() else {
             panic!()
         };
 
-        let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
+        let new_leaf_entry = new_leaves.inner.get(&key_1).unwrap();
 
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 4);
 
-        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 900]);
-        assert_eq!(search_leaf(new_leaf, &key(2)).unwrap().0, &[1u8; 900]);
-        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 900]);
-        assert_eq!(search_leaf(new_leaf, &key(4)).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key_1).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key_2).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key_3).unwrap().0, &[1u8; 900]);
+        assert_eq!(search_leaf(new_leaf, &key_4).unwrap().0, &[1u8; 900]);
     }
 
     #[test]
     fn insert_overflowing() {
+        let key_1 = var_len_key(1, 132);
+        let key_2 = var_len_key(2, 128);
+        let key_3 = var_len_key(3, 104);
+        let key_4 = var_len_key(3, 95);
+
         let leaf = make_leaf(vec![
-            (key(1), vec![1u8; 1200], false),
-            (key(2), vec![1u8; 1200], false),
-            (key(3), vec![1u8; 1200], false),
+            (key_1.clone(), vec![1u8; 1150], false),
+            (key_2.clone(), vec![1u8; 1150], false),
+            (key_3.clone(), vec![1u8; 1150], false),
         ]);
 
         let mut updater = LeafUpdater::new(
@@ -1005,19 +1151,19 @@ pub mod tests {
             Some(BaseLeaf {
                 node: leaf,
                 low: 0,
-                separator: key(1),
+                separator: key_1.clone(),
             }),
             None,
         );
         let mut new_leaves = TestHandleNewLeaf::default();
 
-        updater.ingest(key(4), Some(vec![1u8; 1200]), false, |_| {});
+        updater.ingest(key_4.clone(), Some(vec![1u8; 1200]), false, |_| {});
         let DigestResult::Finished = updater.digest(&mut new_leaves).unwrap() else {
             panic!()
         };
 
-        let new_leaf_entry_1 = new_leaves.inner.get(&key(1)).unwrap();
-        let new_leaf_entry_2 = new_leaves.inner.get(&separate(&key(2), &key(3))).unwrap();
+        let new_leaf_entry_1 = new_leaves.inner.get(&key_1).unwrap();
+        let new_leaf_entry_2 = new_leaves.inner.get(&separate(&key_2, &key_3)).unwrap();
 
         let new_leaf_1 = &new_leaf_entry_1.0;
         let new_leaf_2 = &new_leaf_entry_2.0;
@@ -1025,18 +1171,22 @@ pub mod tests {
         assert_eq!(new_leaf_1.n(), 2);
         assert_eq!(new_leaf_2.n(), 2);
 
-        assert_eq!(search_leaf(new_leaf_1, &key(1)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(search_leaf(new_leaf_1, &key(2)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(search_leaf(new_leaf_2, &key(3)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(search_leaf(new_leaf_2, &key(4)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf_1, &key_1).unwrap().0, &[1u8; 1150]);
+        assert_eq!(search_leaf(new_leaf_1, &key_2).unwrap().0, &[1u8; 1150]);
+        assert_eq!(search_leaf(new_leaf_2, &key_3).unwrap().0, &[1u8; 1150]);
+        assert_eq!(search_leaf(new_leaf_2, &key_4).unwrap().0, &[1u8; 1200]);
     }
 
     #[test]
     fn delete() {
+        let key_1 = var_len_key(1, 153);
+        let key_2 = var_len_key(2, 254);
+        let key_3 = var_len_key(3, 56);
+
         let leaf = make_leaf(vec![
-            (key(1), vec![1u8; 1200], false),
-            (key(2), vec![1u8; 1200], false),
-            (key(3), vec![1u8; 1200], false),
+            (key_1.clone(), vec![1u8; 1200], false),
+            (key_2.clone(), vec![1u8; 1200], false),
+            (key_3.clone(), vec![1u8; 1200], false),
         ]);
 
         let mut updater = LeafUpdater::new(
@@ -1044,23 +1194,23 @@ pub mod tests {
             Some(BaseLeaf {
                 node: leaf,
                 low: 0,
-                separator: key(1),
+                separator: key_1.clone(),
             }),
             None,
         );
         let mut new_leaves = TestHandleNewLeaf::default();
 
-        updater.ingest(key(2), None, false, |_| {});
+        updater.ingest(key_2.clone(), None, false, |_| {});
         let DigestResult::Finished = updater.digest(&mut new_leaves).unwrap() else {
             panic!()
         };
 
-        let new_leaf_entry = new_leaves.inner.get(&key(1)).unwrap();
+        let new_leaf_entry = new_leaves.inner.get(&key_1).unwrap();
 
         let new_leaf = &new_leaf_entry.0;
         assert_eq!(new_leaf.n(), 2);
-        assert_eq!(search_leaf(new_leaf, &key(1)).unwrap().0, &[1u8; 1200]);
-        assert_eq!(search_leaf(new_leaf, &key(3)).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf, &key_1).unwrap().0, &[1u8; 1200]);
+        assert_eq!(search_leaf(new_leaf, &key_3).unwrap().0, &[1u8; 1200]);
     }
 
     #[test]
@@ -1240,6 +1390,47 @@ pub mod tests {
                 LeafOp::Insert(key(4), vec![1u8; 300], false),
             ]
         );
+    }
+
+    #[test]
+    fn split_with_prefix_compression() {
+        let prefixed_key = |prefix_byte: u8, prefix_len: usize, i: usize| -> Key {
+            let mut k = vec![0u8; prefix_len + 2];
+            for x in k.iter_mut().take(prefix_len) {
+                *x = prefix_byte;
+            }
+            k[prefix_len..prefix_len + 2].copy_from_slice(&(i as u16).to_be_bytes());
+            k
+        };
+
+        let key = |i, len: usize| prefixed_key(0x00, len - 2, i);
+        let key2 = |i, len: usize| prefixed_key(0xff, len - 2, i);
+
+        let mut updater = LeafUpdater::new(PAGE_POOL.clone(), None, Some(key2(5, 100)));
+        let mut new_leaves = TestHandleNewLeaf::default();
+
+        let prefix_compressed = 120;
+        for i in 0..prefix_compressed {
+            updater.ingest(key(i, 600), Some(vec![i as u8; 8]), false, |_| {});
+        }
+        updater.ingest(key2(4, 100), Some(vec![1; 300]), false, |_| {});
+        let DigestResult::Finished = updater.digest(&mut new_leaves).unwrap() else {
+            panic!()
+        };
+
+        let new_leaf_entry = new_leaves.inner.get(&vec![0]).unwrap();
+        let new_leaf = &new_leaf_entry.0;
+        assert_eq!(new_leaf.n(), prefix_compressed + 1);
+        assert_eq!(new_leaf.prefix_compressed(), prefix_compressed);
+
+        for i in 0..prefix_compressed {
+            assert_eq!(
+                search_leaf(new_leaf, &key(i, 600)).unwrap().0,
+                &[i as u8; 8]
+            );
+        }
+
+        assert_eq!(search_leaf(new_leaf, &key2(4, 100)).unwrap().0, &[1u8; 300]);
     }
 
     #[test]

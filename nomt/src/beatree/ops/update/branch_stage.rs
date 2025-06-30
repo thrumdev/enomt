@@ -243,7 +243,6 @@ fn reset_branch_base(
         if let Some(separator) = branches_tracker
             .inner
             .last_key_value()
-            // TODO: can this clone be avoided?
             .and_then(|(_, entry)| entry.next_separator.clone())
         {
             let k = if &separator > key { &separator } else { key };
