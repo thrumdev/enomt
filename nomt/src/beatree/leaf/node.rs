@@ -15,8 +15,7 @@
 ///
 /// | n | prefix | [(cell_offset ++ key_len); n] | ----  | [key ++ value; n] |
 ///
-// TODO: update comment with max key size
-/// Where key a byte array smaller than 2^N bits, and cell_offset is the byte offset in the node
+/// Where key a byte array smaller than MAX_KEY_LEN bytes, and cell_offset is the byte offset in the node
 /// to the beginning of the the cell.
 ///
 /// Cell pointers are saved in order of the key, and consequently, so are the cells.
@@ -112,15 +111,15 @@ impl LeafNode {
         self.inner[6..6 + prefix.len()].copy_from_slice(&prefix);
     }
 
-    pub fn raw_key<'a>(&'a self, i: usize) -> RawKey<'a> {
-        let cell_pointer = &self.cell_pointers()[i];
+    pub fn raw_key<'a>(&'a self, cell_pointers: &[[u8; 3]], i: usize) -> RawKey<'a> {
+        let cell_pointer = &cell_pointers[i];
         let key_len = key_len(cell_pointer);
         let offset = offset(cell_pointer);
         &self.inner[offset..offset + key_len]
     }
 
     pub fn key(&self, i: usize) -> Key {
-        let raw_key = self.raw_key(i);
+        let raw_key = self.raw_key(self.cell_pointers(), i);
 
         if i >= self.prefix_compressed() || self.prefix_len() == 0 {
             return raw_key.to_vec();
@@ -320,40 +319,6 @@ impl LeafBuilder {
                 overflow,
             );
 
-            // TODO: Here we have two solutions: one that is cleaner but requires an allocation
-            // (within the `key` method), and one that has more computation in both conditional branches.
-            // This should be benchmarked to decide which one to use.
-
-            // SOL1
-            //let prefix_diff = byte_prefix_len_difference.abs() as usize;
-            //if byte_prefix_len_difference > 0 {
-            //// copy what is missing from the prefix
-            //let mut range = offset..offset + prefix_diff;
-            //self.leaf.inner[range.clone()]
-            //.copy_from_slice(&base_prefix[base_prefix_len - prefix_diff..]);
-            //
-            //// copy the rest of the key
-            //range.start += prefix_diff;
-            //range.end += base_key_len;
-            //self.leaf.inner[range.clone()].copy_from_slice(base.raw_key(base_index));
-            //
-            //// copy the value
-            //range.start += base_key_len;
-            //range.end += value_len;
-            //self.leaf.inner[range].copy_from_slice(base.value(base_index).0);
-            //} else if byte_prefix_len_difference < 0 {
-            //// copy the rest of the key
-            //let mut range = offset..offset + key_len;
-            //self.leaf.inner[range.clone()]
-            //.copy_from_slice(&base.raw_key(base_index)[base_key_len - key_len..]);
-            //
-            //// copy the value
-            //range.start += key_len;
-            //range.end += value_len;
-            //self.leaf.inner[range].copy_from_slice(base.value(base_index).0);
-            //}
-
-            // SOL2
             if byte_prefix_len_difference != 0 {
                 // slow path, each key needs to be copied one by one
                 let new_key = &base.key(base_index)[self.prefix_len..];
@@ -531,7 +496,7 @@ mod tests {
         );
 
         for (i, key, val, overflow) in key_value_pairs {
-            assert_eq!(leaf.raw_key(i), &key);
+            assert_eq!(leaf.raw_key(leaf.cell_pointers(), i), &key);
 
             let expected_key = if i < (n - non_prefix_compressed) as usize {
                 [prefix.clone(), key].concat()

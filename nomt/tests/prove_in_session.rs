@@ -21,7 +21,7 @@ fn prove_in_session() {
 
         let proof = t.prove_id(i);
         let expected_leaf = LeafData {
-            key_path: k,
+            key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
         };
         assert!(proof
@@ -61,7 +61,7 @@ fn prove_in_session_against_overlay() {
 
         let proof = t.prove_id(i);
         let expected_leaf = LeafData {
-            key_path: k,
+            key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
         };
         assert!(proof
@@ -115,7 +115,7 @@ fn prove_in_session_no_cache() {
 
         let proof = t.prove_id(i);
         let expected_leaf = LeafData {
-            key_path: k,
+            key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
         };
         assert!(proof

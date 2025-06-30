@@ -250,7 +250,6 @@ impl LeafUpdater {
             return;
         }
 
-        // TODO: maybe abstract into something similar to BranchTracker
         let base_compressed_end = std::cmp::min(end, base.node.prefix_compressed() as usize);
 
         if start != base_compressed_end {

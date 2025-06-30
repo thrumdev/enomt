@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use crate::beatree::{
     branch::node::{self, get_key, BRANCH_NODE_BODY_SIZE},

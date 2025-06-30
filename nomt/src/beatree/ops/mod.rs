@@ -22,9 +22,6 @@ mod update;
 pub use reconstruction::reconstruct;
 pub use update::update;
 
-#[cfg(test)]
-pub use update::make_leaf;
-
 /// Do a partial lookup of the key in the beatree.
 ///
 /// This determines the leaf store page number which might store the associated value, or `None`
@@ -103,7 +100,7 @@ pub fn lookup_blocking(
 /// Binary search a branch node for the child node containing the key. This returns the last child
 /// node pointer whose separator is less than or equal to the given key.
 pub fn search_branch(branch: &BranchNode, key: &Key) -> Option<(usize, PageNumber)> {
-    let (found, pos) = find_key_pos(branch, key, None);
+    let (found, pos) = branch_find_key_pos(branch, key, None);
 
     if found {
         return Some((pos, branch.node_pointer(pos).into()));
@@ -124,12 +121,11 @@ pub fn search_leaf<'a>(leaf: &'a LeafNode, key: &Key) -> Option<(&'a [u8], bool)
     Some(leaf.value(index))
 }
 
-// TODO: updte to branch_find_key_pos
 // Binary search for a key within a branch node.
 // Accept a field to override the starting point of the binary search.
 // It returns true and the index of the specified key,
 // or false and the index containing the first key greater than the specified one.
-pub fn find_key_pos(branch: &BranchNode, key: &Key, low: Option<usize>) -> (bool, usize) {
+pub fn branch_find_key_pos(branch: &BranchNode, key: &Key, low: Option<usize>) -> (bool, usize) {
     let prefix = branch.prefix();
     let prefix_len = prefix.len();
     let n = branch.n() as usize;
@@ -183,10 +179,10 @@ pub fn leaf_find_key_pos(leaf: &LeafNode, key: &Key, low: Option<usize>) -> (boo
         }
     };
 
-    // TODO: this could be a little bit more efficient maybe by not calling
-    // raw_key which cast every time the cell_pointers from memory but doing it once and use it
-    // all the time, so it should be in cache
-    binary_search(start, end, |index| key.cmp(leaf.raw_key(index)))
+    let cell_pointers = leaf.cell_pointers();
+    binary_search(start, end, |index| {
+        key.cmp(leaf.raw_key(cell_pointers, index))
+    })
 }
 
 // If there are available keys in the node, then it returns the index
