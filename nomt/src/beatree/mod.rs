@@ -4,7 +4,7 @@ use branch::BRANCH_NODE_SIZE;
 use crossbeam_channel::{Receiver, Sender};
 use imbl::OrdMap;
 
-use leaf::node::{MAX_KEY_SIZE, MAX_LEAF_KEY_AND_VALUE_SIZE};
+use leaf::node::{MAX_KEY_LEN, MAX_LEAF_KEY_AND_VALUE_SIZE};
 use nomt_core::trie::ValueHash;
 use ops::overflow;
 use parking_lot::{ArcMutexGuard, Condvar, Mutex, RwLock};
@@ -37,10 +37,6 @@ pub mod benches;
 
 #[cfg(feature = "fuzz")]
 pub use ops::bit_ops::*;
-
-// TODO: remove this re-export
-#[cfg(test)]
-pub use ops::make_leaf;
 
 pub type Key = Vec<u8>;
 
@@ -350,11 +346,11 @@ impl ValueChange {
         key: &Key,
         maybe_value: Option<Vec<u8>>,
     ) -> Result<Self> {
-        if key.len() > MAX_KEY_SIZE {
+        if key.len() > MAX_KEY_LEN {
             return Err(anyhow::anyhow!(
                 "Key exceeds limit: {}B > {}B",
                 key.len(),
-                MAX_KEY_SIZE
+                MAX_KEY_LEN
             ));
         }
 
@@ -368,7 +364,7 @@ impl ValueChange {
     }
 
     /// Create an insertion, determining whether to use the normal or overflow variant based on size.
-    pub fn insert<T: crate::ValueHasher>(v: Vec<u8>, max_value_size: usize) -> Self {
+    fn insert<T: crate::ValueHasher>(v: Vec<u8>, max_value_size: usize) -> Self {
         if v.len() > max_value_size {
             let value_hash = T::hash_value(&v);
             ValueChange::InsertOverflow(v, value_hash)
@@ -798,4 +794,65 @@ impl ReadTransactionCounter {
 struct ReadTransactionCounterInner {
     read_transactions: Mutex<usize>,
     cvar: Condvar,
+}
+
+#[cfg(test)]
+mod tests {
+    use nomt_core::hasher::{blake3::Blake3BinaryHasher, BinaryHasher};
+
+    use super::{
+        leaf::node::{MAX_KEY_LEN, MAX_LEAF_KEY_AND_VALUE_SIZE},
+        ValueChange,
+    };
+
+    #[test]
+    fn test_value_change_key_limit() {
+        assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
+                &vec![1; MAX_KEY_LEN + 1],
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
+                &vec![1; MAX_KEY_LEN + 1],
+                Some(vec![])
+            )
+            .is_err()
+        );
+        assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
+                &vec![1; MAX_KEY_LEN],
+                None
+            )
+            .is_ok()
+        );
+        assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
+                &vec![1; MAX_KEY_LEN],
+                Some(vec![])
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_value_change_overflow_limit_adaptation() {
+        for key_len in (0..MAX_KEY_LEN).filter(|x| x % 7 == 0) {
+            for value_len in (0..MAX_LEAF_KEY_AND_VALUE_SIZE).filter(|x| x % 7 == 0) {
+                let res = ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
+                    &vec![1; key_len],
+                    Some(vec![1; value_len]),
+                )
+                .unwrap();
+
+                if key_len + value_len > MAX_LEAF_KEY_AND_VALUE_SIZE {
+                    assert!(matches!(res, ValueChange::InsertOverflow(..)));
+                } else {
+                    assert!(matches!(res, ValueChange::Insert(..)));
+                }
+            }
+        }
+    }
 }

@@ -804,11 +804,7 @@ pub mod benches {
             let separator_len_bits = (32 - prefix_len_bytes) * 8;
             let n = (8 * body_size_target - prefix_len_bits) / (separator_len_bits + 8 * 6);
 
-            let mut separators: Vec<(usize, Key)> = get_keys(prefix_len_bytes, n)
-                .into_iter()
-                // TODO: change
-                .map(|s| (separator_len(&s), s))
-                .collect();
+            let mut separators: Vec<Key> = get_keys(prefix_len_bytes, n).into_iter().collect();
             separators.sort_by(|a, b| a.1.cmp(&b.1));
 
             group.bench_function(

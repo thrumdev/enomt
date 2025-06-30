@@ -14,7 +14,7 @@ use super::{
     branch::node::{get_key, BranchNode},
     index::Index,
     leaf::node::LeafNode,
-    ops::{leaf_find_key_pos, search_leaf},
+    ops::leaf_find_key_pos,
     Key, LeafNodeRef, ValueChange,
 };
 
@@ -119,7 +119,6 @@ impl BeatreeIterator {
             }
         };
 
-        // TODOs: `k.clone()` is related to `IterOutput`, which should contain a reference to the keys
         match action {
             Action::TakeLeaf => self.leaf_values.next(),
             Action::TakeMemory => match self.memory_values.next().unwrap() {
@@ -158,7 +157,6 @@ impl BeatreeIterator {
     }
 }
 
-// TODO: This may eventually contain something like &Key.
 /// The output of the iterator.
 pub enum IterOutput<'a> {
     // The iterator is blocked and needs a new leaf to be supplied.
@@ -242,8 +240,6 @@ impl LeafIterator {
     fn peek_key(&mut self) -> Option<(Key, bool)> {
         match self.state {
             LeafIteratorState::Done { .. } => None,
-            // TODO: clones could be avoided here, a peek at an in-memory beatree leaf
-            // should be able to obtain a `&[u8]` from current.leaf.key(current.index)
             LeafIteratorState::Blocked { ref separator, .. } => Some((separator.clone(), true)),
             LeafIteratorState::Proceeding { ref current, .. } => {
                 Some((current.leaf.key(current.index), false))
@@ -584,8 +580,10 @@ mod tests {
     use crate::beatree::{
         branch::{node::get_key, BranchNode, BranchNodeBuilder},
         index::Index,
-        leaf::node::{LeafBuilder, LeafNode},
-        make_leaf,
+        leaf::{
+            self,
+            node::{LeafBuilder, LeafNode},
+        },
         ops::bit_ops,
         BeatreeIterator, Key, LeafNodeRef, PageNumber, ValueChange,
     };
@@ -614,9 +612,39 @@ mod tests {
             .map(|(key, v)| (key, encode_value(v), false))
             .collect();
 
-        let leaf = make_leaf(key_value_pairs);
+        let n = key_value_pairs.len();
+        let mut byte_prefix_len = 0;
+        let mut sum_values_len = 0;
+        let mut sum_keys_len = 0;
+        let first = key_value_pairs.first().unwrap().0.clone();
 
-        (separator, leaf)
+        for (key, value, _) in key_value_pairs.iter().by_ref() {
+            sum_values_len += value.len();
+            sum_keys_len += key.len();
+            byte_prefix_len = bit_ops::byte_prefix_len(&first, key)
+        }
+
+        let compressed_keys_len = leaf::node::compressed_key_range_size(
+            first.len(),
+            n,
+            sum_keys_len - first.len(),
+            byte_prefix_len,
+        );
+
+        let mut builder = LeafBuilder::new(
+            &PAGE_POOL,
+            n,
+            byte_prefix_len,
+            n,
+            compressed_keys_len,
+            sum_values_len,
+        );
+
+        for (k, v, overflow) in key_value_pairs {
+            builder.push(&k, &v, overflow);
+        }
+
+        (separator, Arc::new(builder.finish()))
     }
 
     fn build_branch(leaves: Vec<(Key, PageNumber)>) -> Arc<BranchNode> {
@@ -655,9 +683,8 @@ mod tests {
         index
     }
 
-    // TODO: update this to use var len keys
     fn key(x: u16) -> Key {
-        let mut k = vec![0; 32];
+        let mut k = vec![0; x as usize + 2];
         k[0..2].copy_from_slice(&x.to_be_bytes());
         k
     }
@@ -672,7 +699,7 @@ mod tests {
             (key(5), 5),
         ]);
 
-        let branch = build_branch(vec![(key(0), 69.into())]);
+        let branch = build_branch(vec![(vec![0], 69.into())]);
         let index = build_index(vec![branch.clone()]);
 
         let secondary_staging = vec![
@@ -694,10 +721,7 @@ mod tests {
             primary_staging,
             Some(secondary_staging),
             index,
-            // TODO: Key::default() is not being used because right now the first
-            // key in the indes is [0;32] while vec![] will be used when the Index will
-            // be updated to use var len keys
-            vec![0; 32],
+            vec![0],
             None,
         );
         let mut collected = Vec::new();
@@ -719,7 +743,7 @@ mod tests {
         let key = |x: u8| -> Key { vec![x; 32] };
 
         // split across 2 branches
-        let branch_1 = build_branch(vec![(key(0), 69.into()), (key(4), 70.into())]);
+        let branch_1 = build_branch(vec![(vec![0], 69.into()), (key(4), 70.into())]);
         let branch_2 = build_branch(vec![(key(6), 420.into()), (key(8), 421.into())]);
 
         let index = build_index(vec![branch_1.clone(), branch_2.clone()]);
@@ -729,11 +753,8 @@ mod tests {
             iter.needed_leaves().map(|pn| pn.0).collect::<Vec<_>>()
         };
 
-        // TODO: Key::default() is not being used because right now the first
-        // key in the indes is [0;32] while vec![0] will be used when the Index will
-        // be updated to use var len keys
         assert_eq!(
-            get_needed(/* Key::default()  */ vec![0; 32], None),
+            get_needed(/* Key::default()  */ vec![0], None),
             vec![69, 70, 420, 421]
         );
         assert_eq!(get_needed(key(2), Some(key(7))), vec![69, 70, 420]);
@@ -770,7 +791,7 @@ mod tests {
     fn end_bound_respected_in_leaves() {
         let (_, leaf_1) = build_leaf(vec![(key(1), 1), (key(2), 2), (key(3), 3)]);
         let (_, leaf_2) = build_leaf(vec![(key(6), 6), (key(7), 7)]);
-        let branch = build_branch(vec![(key(0), 69.into()), (key(6), 70.into())]);
+        let branch = build_branch(vec![(vec![0], 69.into()), (key(6), 70.into())]);
         let index = build_index(vec![branch.clone()]);
         {
             let end = key(7);
@@ -779,10 +800,7 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                // TODO: Key::default() is not being used because right now the first
-                // key in the indes is [0;32] while vec![0] will be used when the Index will
-                // be updated to use var len keys
-                vec![0; 32],
+                vec![0],
                 Some(end.clone()),
             );
             while let Some(output) = iter.next() {
@@ -805,10 +823,7 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                // TODO: Key::default() is not being used because right now the first
-                // key in the indes is [0;32] while vec![0] will be used when the Index will
-                // be updated to use var len keys
-                vec![0; 32],
+                vec![0],
                 Some(end.clone()),
             );
             while let Some(output) = iter.next() {
@@ -828,7 +843,7 @@ mod tests {
         // the first item in the second provided leaf.
         let (_, leaf_1) = build_leaf(vec![(key(1), 1), (key(2), 2), (key(3), 3)]);
         let (_, leaf_2) = build_leaf(vec![(key(8), 8), (key(9), 9)]);
-        let branch = build_branch(vec![(key(0), 69.into()), (key(6), 70.into())]);
+        let branch = build_branch(vec![(vec![0], 69.into()), (key(6), 70.into())]);
         let index = build_index(vec![branch.clone()]);
 
         {
@@ -838,10 +853,7 @@ mod tests {
                 OrdMap::new(),
                 None,
                 index.clone(),
-                // TODO: Key::default() is not being used because right now the first
-                // key in the indes is [0;32] while vec![0] will be used when the Index will
-                // be updated to use var len keys
-                vec![0; 32],
+                vec![0],
                 Some(end.clone()),
             );
             while let Some(output) = iter.next() {
@@ -849,7 +861,7 @@ mod tests {
                     IterOutput::Blocked => iter.provide_leaf(LeafNodeRef {
                         inner: leaves.next().unwrap(),
                     }),
-                    IterOutput::Item(k, _) => assert!(dbg!(k) < end),
+                    IterOutput::Item(k, _) => assert!(k < end),
                     IterOutput::OverflowItem(_, _, _) => panic!(),
                 }
             }

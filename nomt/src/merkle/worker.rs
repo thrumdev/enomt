@@ -510,7 +510,6 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                         break;
                     }
                 } else {
-                    // TODO: can this clone be removed? It could probably be replaced with std::mem::take
                     seeker.push(self.shared.read_write[next_push].0.clone());
                     seeker.submit_all(page_set);
                 }
