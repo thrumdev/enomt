@@ -440,7 +440,7 @@ mod tests {
         static ref PAGE_POOL: PagePool = PagePool::new();
     }
     fn dummy_page(page_id: PageId, value: u8, bucket_info: BucketInfo) -> DirtyPage {
-        let mut page = PageMut::pristine_empty(&PAGE_POOL, &page_id);
+        let mut page = PageMut::pristine_empty(&PAGE_POOL);
         page.set_node(0, [value; 32]);
         DirtyPage {
             page: page.freeze(),

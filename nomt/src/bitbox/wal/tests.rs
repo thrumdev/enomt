@@ -17,7 +17,7 @@ fn test_write_read() {
     builder.reset(69);
     builder.write_clear(0);
     builder.write_update(
-        [0; 32],
+        0,
         &PageDiff::from_bytes(hex_literal::hex!(
             "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
         ))
@@ -28,7 +28,7 @@ fn test_write_read() {
     );
     builder.write_clear(1);
     builder.write_update(
-        [1; 32],
+        1,
         &PageDiff::from_bytes(hex_literal::hex!(
             "01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
         ))
@@ -38,7 +38,7 @@ fn test_write_read() {
         1,
     );
     builder.write_update(
-        [2; 32],
+        2,
         &{
             let mut diff = PageDiff::default();
             for i in 0..126 {
@@ -65,7 +65,7 @@ fn test_write_read() {
     assert_eq!(
         reader.read_entry().unwrap(),
         Some(WalEntry::Update {
-            page_id: [0; 32],
+            page_id_hash: 0,
             page_diff: PageDiff::default(),
             changed_nodes: vec![],
             elided_children: ElidedChildren::new(),
@@ -79,7 +79,7 @@ fn test_write_read() {
     assert_eq!(
         reader.read_entry().unwrap(),
         Some(WalEntry::Update {
-            page_id: [1; 32],
+            page_id_hash: 1,
             page_diff: {
                 let mut diff = PageDiff::default();
                 diff.set_changed(0);
@@ -93,7 +93,7 @@ fn test_write_read() {
     assert_eq!(
         reader.read_entry().unwrap(),
         Some(WalEntry::Update {
-            page_id: [2; 32],
+            page_id_hash: 2,
             page_diff: {
                 let mut diff = PageDiff::default();
                 for i in 0..126 {

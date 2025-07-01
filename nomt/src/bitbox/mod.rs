@@ -135,7 +135,6 @@ impl DB {
                 &page_pool,
                 &store,
                 &mut meta_map,
-                seed,
             )?;
         }
 
@@ -157,6 +156,11 @@ impl DB {
                 capacity,
             }),
         })
+    }
+
+    /// Return the seed used by the hash table.
+    pub fn seed(&self) -> &[u8; 16] {
+        &self.shared.seed
     }
 
     /// Return space utilization counts.
@@ -244,7 +248,7 @@ impl DB {
                 }
 
                 wal_blob_builder.write_update(
-                    page_id.encode(),
+                    hash,
                     &dirty_page.diff,
                     dirty_page
                         .diff
@@ -426,7 +430,6 @@ fn recover(
     page_pool: &PagePool,
     ht_offsets: &HTOffsets,
     meta_map: &mut MetaMap,
-    seed: [u8; 16],
 ) -> anyhow::Result<()> {
     use crate::bitbox::wal::WalBlobReader;
     use std::io::{Seek, SeekFrom};
@@ -457,16 +460,15 @@ fn recover(
                 changed_meta_page_ixs.insert(meta_map.page_index(bucket as usize));
             }
             wal::WalEntry::Update {
-                page_id,
+                page_id_hash,
                 page_diff,
                 changed_nodes,
                 elided_children,
                 bucket,
             } => {
-                let hash = hash_raw_page_id(page_id, &seed);
-                let meta_map_changed = meta_map.hint_not_match(bucket as usize, hash);
+                let meta_map_changed = meta_map.hint_not_match(bucket as usize, page_id_hash);
                 if meta_map_changed {
-                    meta_map.set_full(bucket as usize, hash);
+                    meta_map.set_full(bucket as usize, page_id_hash);
                     // Note that the meta page requires update.
                     changed_meta_page_ixs.insert(meta_map.page_index(bucket as usize));
                 }
@@ -491,10 +493,9 @@ fn recover(
                 page_diff.unpack_changed_nodes(&changed_nodes, &mut page);
 
                 // Label the page.
-                page[PAGE_SIZE - 32..].copy_from_slice(&page_id);
+                page[PAGE_SIZE - 8..].copy_from_slice(&page_id_hash.to_le_bytes());
                 // Write elided children bitfield.
-                page[PAGE_SIZE - 32 - 8..PAGE_SIZE - 32]
-                    .copy_from_slice(&elided_children.to_bytes());
+                page[PAGE_SIZE - 16..PAGE_SIZE - 8].copy_from_slice(&elided_children.to_bytes());
 
                 ht_fd.write_all_at(&page, pn * PAGE_SIZE as u64)?;
             }
@@ -607,7 +608,11 @@ impl PageLoad {
     /// Otherwise, you must continue with [`PageLoader::probe`].
     pub fn try_complete(&mut self, page: FatPage) -> Option<(FatPage, BucketIndex)> {
         assert!(self.needs_completion());
-        if page[PAGE_SIZE - 32..] == self.page_id.encode() {
+
+        let expected_hash = self.probe_sequence.hash;
+        let hash = u64::from_le_bytes(page[PAGE_SIZE - 8..].try_into().unwrap());
+
+        if hash == expected_hash {
             Some((page, BucketIndex(self.probe_sequence.bucket())))
         } else {
             self.state = PageLoadState::Pending;
@@ -670,11 +675,11 @@ fn allocate_bucket(
     }
 }
 
-fn hash_page_id(page_id: &PageId, seed: &[u8; 16]) -> u64 {
+pub fn hash_page_id(page_id: &PageId, seed: &[u8; 16]) -> u64 {
     hash_raw_page_id(page_id.encode(), seed)
 }
 
-fn hash_raw_page_id(page_id: [u8; 32], seed: &[u8; 16]) -> u64 {
+fn hash_raw_page_id(page_id: &[u8], seed: &[u8; 16]) -> u64 {
     // UNWRAP: 8 byte slice can always be transformed into 8 byte array.
     let seed_u64 = u64::from_be_bytes(seed[..8].try_into().unwrap());
     twox_hash::xxhash3_64::Hasher::oneshot_with_seed(seed_u64, &page_id)

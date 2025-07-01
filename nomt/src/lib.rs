@@ -601,7 +601,7 @@ impl<T: HashAlgorithm> Session<T> {
             }
         }
 
-        let merkle_output = merkle_update_handle.join()?;
+        let merkle_output = merkle_update_handle.join(self.store.hash_table_seed())?;
         Ok(FinishedSession {
             value_transaction: tx,
             merkle_output,
