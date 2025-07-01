@@ -96,7 +96,7 @@ impl WalBlobBuilder {
 
     pub fn write_update(
         &mut self,
-        page_id: [u8; 32],
+        page_id_hash: u64,
         page_diff: &PageDiff,
         changed: impl Iterator<Item = [u8; 32]>,
         elided_children: ElidedChildren,
@@ -105,7 +105,7 @@ impl WalBlobBuilder {
         unsafe {
             // SAFETY: Those do not overlap with the mmap.
             self.write_byte(WAL_ENTRY_TAG_UPDATE);
-            self.write(&page_id);
+            self.write(&page_id_hash.to_le_bytes());
             self.write(&page_diff.as_bytes());
             for changed in changed {
                 self.write(&changed);

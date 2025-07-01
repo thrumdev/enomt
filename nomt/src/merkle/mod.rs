@@ -18,6 +18,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     beatree::ReadTransaction as BeatreeReadTx,
+    bitbox::hash_page_id,
     io::PagePool,
     overlay::LiveOverlay,
     page_cache::{Page, PageCache, ShardIndex},
@@ -87,10 +88,13 @@ impl ElidedChildren {
 }
 
 /// Updated pages produced by update workers.
-pub struct UpdatedPages(Vec<Vec<UpdatedPage>>);
+pub struct UpdatedPages {
+    pages: Vec<Vec<UpdatedPage>>,
+    seed: [u8; 16],
+}
 
 impl UpdatedPages {
-    /// Freeze, label, and iterate all the pages.
+    /// Label, freeze and iterate all the pages.
     ///
     /// Pages are 'labeled' by placing the page ID into the page data itself prior to freezing.
     ///
@@ -100,27 +104,33 @@ impl UpdatedPages {
         self,
         alloc_dependent: bool,
     ) -> impl Iterator<Item = (PageId, DirtyPage)> {
-        self.0.into_iter().flatten().map(move |updated_page| {
-            let page = updated_page.page.freeze();
-            let dirty = DirtyPage {
-                page,
-                diff: updated_page.diff,
-                bucket: match updated_page.bucket_info {
-                    BucketInfo::Known(b) => crate::store::BucketInfo::Known(b),
-                    BucketInfo::Dependent(b) => crate::store::BucketInfo::FreshOrDependent(b),
-                    BucketInfo::Fresh => {
-                        if alloc_dependent {
-                            crate::store::BucketInfo::FreshOrDependent(SharedMaybeBucketIndex::new(
-                                None,
-                            ))
-                        } else {
-                            crate::store::BucketInfo::FreshWithNoDependents
+        self.pages
+            .into_iter()
+            .flatten()
+            .map(move |mut updated_page| {
+                let hash = hash_page_id(&updated_page.page_id, &self.seed);
+                updated_page.page.label(hash);
+                let page = updated_page.page.freeze();
+
+                let dirty = DirtyPage {
+                    page,
+                    diff: updated_page.diff,
+                    bucket: match updated_page.bucket_info {
+                        BucketInfo::Known(b) => crate::store::BucketInfo::Known(b),
+                        BucketInfo::Dependent(b) => crate::store::BucketInfo::FreshOrDependent(b),
+                        BucketInfo::Fresh => {
+                            if alloc_dependent {
+                                crate::store::BucketInfo::FreshOrDependent(
+                                    SharedMaybeBucketIndex::new(None),
+                                )
+                            } else {
+                                crate::store::BucketInfo::FreshWithNoDependents
+                            }
                         }
-                    }
-                },
-            };
-            (updated_page.page_id, dirty)
-        })
+                    },
+                };
+                (updated_page.page_id, dirty)
+            })
     }
 }
 
@@ -376,7 +386,7 @@ pub struct UpdateHandle {
 
 impl UpdateHandle {
     /// Wait on the results of the commit operation.
-    pub fn join(self) -> std::io::Result<Output> {
+    pub fn join(self, hash_table_seed: [u8; 16]) -> std::io::Result<Output> {
         let mut new_root = None;
 
         let mut maybe_witness = self.shared.witness.then_some(Witness {
@@ -452,7 +462,10 @@ impl UpdateHandle {
         // UNWRAP: one thread always produces the root.
         Ok(Output {
             root: new_root.unwrap(),
-            updated_pages: UpdatedPages(updated_pages),
+            updated_pages: UpdatedPages {
+                pages: updated_pages,
+                seed: hash_table_seed,
+            },
             witness: maybe_witness,
         })
     }

@@ -77,8 +77,8 @@ impl PageSet {
 }
 
 impl super::page_walker::PageSet for PageSet {
-    fn fresh(&self, page_id: &PageId) -> PageMut {
-        let page = PageMut::pristine_empty(&self.page_pool, &page_id);
+    fn fresh(&self) -> PageMut {
+        let page = PageMut::pristine_empty(&self.page_pool);
         page
     }
 

@@ -13,7 +13,7 @@ use std::{fs::File, io::Seek};
 pub enum WalEntry {
     Update {
         /// The unique identifier of the page being updated.
-        page_id: [u8; 32],
+        page_id_hash: u64,
         /// A bitmap where each bit indicates whether the node at the corresponding index was
         /// changed by this update.
         page_diff: PageDiff,
@@ -92,7 +92,7 @@ impl WalBlobReader {
                 Ok(Some(WalEntry::Clear { bucket }))
             }
             WAL_ENTRY_TAG_UPDATE => {
-                let page_id: [u8; 32] = self.read_buf()?;
+                let page_id_hash: u64 = self.read_u64()?;
                 let page_diff: [u8; 16] = self.read_buf()?;
                 let page_diff = PageDiff::from_bytes(page_diff)
                     .ok_or_else(|| anyhow::anyhow!("Invalid page diff"))?;
@@ -109,7 +109,7 @@ impl WalBlobReader {
                 let bucket = self.read_u64()?;
 
                 Ok(Some(WalEntry::Update {
-                    page_id,
+                    page_id_hash,
                     page_diff,
                     changed_nodes,
                     elided_children,
