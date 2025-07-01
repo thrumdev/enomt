@@ -28,6 +28,9 @@ pub type Node = [u8; 32];
 /// The path to a key.
 pub type KeyPath = Vec<u8>;
 
+/// The maximum length, in bytes, of the key path.
+pub const MAX_KEY_PATH_LEN: usize = 1 << 10;
+
 /// The hash of a value. In this schema, it is always 256 bits.
 pub type ValueHash = [u8; 32];
 
