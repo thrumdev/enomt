@@ -40,7 +40,7 @@ fn set_node(data: &mut FatPage, index: usize, node: Node) {
 
 fn read_elided_children(data: &FatPage) -> ElidedChildren {
     // UNWRAP: elided_children slice is 8 bytes long.
-    ElidedChildren::from_bytes(data[PAGE_SIZE - 32 - 8..PAGE_SIZE - 32].try_into().unwrap())
+    ElidedChildren::from_bytes(data[PAGE_SIZE - 16..PAGE_SIZE - 8].try_into().unwrap())
 }
 
 /// A mutable page.
@@ -49,6 +49,10 @@ pub struct PageMut {
 }
 
 impl PageMut {
+    pub fn label(&mut self, hash: u64) {
+        self.inner[PAGE_SIZE - 8..].copy_from_slice(&hash.to_le_bytes());
+    }
+
     /// Freeze the page.
     pub fn freeze(self) -> Page {
         Page {
@@ -61,11 +65,10 @@ impl PageMut {
     /// Note that this is not actually guaranteed to be blank, because pages in the pool are not
     /// zeroed prior to use. However, within the context of the trie, no search should require
     /// reading from a blank page.
-    pub fn pristine_empty(page_pool: &PagePool, page_id: &PageId) -> PageMut {
+    pub fn pristine_empty(page_pool: &PagePool) -> PageMut {
         let mut page = PageMut {
             inner: page_pool.alloc_fat_page(),
         };
-        page.inner[PAGE_SIZE - 32..].copy_from_slice(&page_id.encode());
         // No garbage in the elided children bitfield.
         page.set_elided_children(&ElidedChildren::new());
         page
@@ -93,7 +96,7 @@ impl PageMut {
 
     /// Write the bitfield representing which child page has been elided.
     pub fn set_elided_children(&mut self, elided_children: &ElidedChildren) {
-        self.inner[PAGE_SIZE - 32 - 8..PAGE_SIZE - 32].copy_from_slice(&elided_children.to_bytes());
+        self.inner[PAGE_SIZE - 16..PAGE_SIZE - 8].copy_from_slice(&elided_children.to_bytes());
     }
 }
 

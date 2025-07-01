@@ -155,7 +155,7 @@ pub trait PageSet {
     /// Checks if a `page_id` is already present.
     fn contains(&self, page_id: &PageId) -> bool;
     /// Create a new fresh page.
-    fn fresh(&self, page_id: &PageId) -> PageMut;
+    fn fresh(&self) -> PageMut;
     /// Insert a page into the set along with its origin.
     fn insert(&mut self, page_id: PageId, page: Page, page_origin: PageOrigin);
 }
@@ -414,7 +414,7 @@ impl<H: NodeHasher> PageWalker<H> {
             if self.position.is_root() {
                 let (page, page_origin) = if fresh {
                     (
-                        page_set.fresh(&ROOT_PAGE_ID),
+                        page_set.fresh(),
                         PageOrigin::Reconstructed(0, PageDiff::default()),
                     )
                 } else {
@@ -444,7 +444,7 @@ impl<H: NodeHasher> PageWalker<H> {
                     .unwrap();
 
                 let (page_id, page, diff, page_origin) = if fresh {
-                    let page = page_set.fresh(&child_page_id);
+                    let page = page_set.fresh();
                     (
                         child_page_id,
                         page,
@@ -521,7 +521,7 @@ impl<H: NodeHasher> PageWalker<H> {
             return None;
         }
 
-        let mut first_elided_page = page_set.fresh(&first_elided_page_id);
+        let mut first_elided_page = page_set.fresh();
         first_elided_page.set_node(0, TERMINATOR);
         first_elided_page.set_node(1, TERMINATOR);
         let mut diff = PageDiff::default();
@@ -1017,10 +1017,7 @@ mod tests {
         fn default() -> Self {
             let page_pool = PagePool::new();
             let mut inner = HashMap::new();
-            inner.insert(
-                ROOT_PAGE_ID,
-                PageMut::pristine_empty(&page_pool, &ROOT_PAGE_ID).freeze(),
-            );
+            inner.insert(ROOT_PAGE_ID, PageMut::pristine_empty(&page_pool).freeze());
             MockPageSet { page_pool, inner }
         }
     }
@@ -1034,8 +1031,8 @@ mod tests {
     }
 
     impl PageSet for MockPageSet {
-        fn fresh(&self, page_id: &PageId) -> PageMut {
-            let page = PageMut::pristine_empty(&self.page_pool, page_id);
+        fn fresh(&self) -> PageMut {
+            let page = PageMut::pristine_empty(&self.page_pool);
             page
         }
 
@@ -1278,11 +1275,11 @@ mod tests {
         let page_id_b = trie_pos![0, 0, 0, 0, 0, 1, 0].page_id().unwrap();
         page_set.inner.insert(
             page_id_a.clone(),
-            PageMut::pristine_empty(&page_set.page_pool, &page_id_a).freeze(),
+            PageMut::pristine_empty(&page_set.page_pool).freeze(),
         );
         page_set.inner.insert(
             page_id_b.clone(),
-            PageMut::pristine_empty(&page_set.page_pool, &page_id_b).freeze(),
+            PageMut::pristine_empty(&page_set.page_pool).freeze(),
         );
 
         walker.advance_and_replace(
@@ -1462,9 +1459,8 @@ mod tests {
         let terminator_6 = TriePosition::from_path_and_depth(key_path![0, 0, 0, 0, 0, 1], 6);
         let terminator_7 = TriePosition::from_path_and_depth(key_path![0, 0, 0, 0, 0, 0, 1], 7);
 
-        let mut root_page = PageMut::pristine_empty(&page_set.page_pool, &ROOT_PAGE_ID);
-        let mut page1 =
-            PageMut::pristine_empty(&page_set.page_pool, &terminator_7.page_id().unwrap());
+        let mut root_page = PageMut::pristine_empty(&page_set.page_pool);
+        let mut page1 = PageMut::pristine_empty(&page_set.page_pool);
 
         // we place garbage in all the sibling positions for those internal  nodes.
         {
@@ -1797,7 +1793,7 @@ mod tests {
         updates.iter().find(|update| update.page_id == ROOT_PAGE_ID);
         updates
             .iter()
-            .find(|update| update.page_id.length_dependent_encoding() == &[24]);
+            .find(|update| update.page_id.encode() == &[24]);
         page_set.apply(updates);
 
         let mut page_id = ROOT_PAGE_ID;
@@ -1820,7 +1816,7 @@ mod tests {
         // Make sure that elision bitfield was updated correctly.
         let reconstructed_page = reconstructed_pages
             .iter()
-            .find(|(page_id, _, _, _)| page_id.length_dependent_encoding() == &[24, 24])
+            .find(|(page_id, _, _, _)| page_id.encode() == &[24, 24])
             .map(|(_, page, _, _)| page)
             .unwrap();
 
@@ -1842,7 +1838,7 @@ mod tests {
                 .map(|idx| correct_pages.remove(idx).page)
                 .unwrap();
 
-            let page = if page_id.length_dependent_encoding() == &[24, 24] {
+            let page = if page_id.encode() == &[24, 24] {
                 // The correct pages are build without elision,
                 // so the elided children bitfield is not present.
                 let mut no_bitfield_page = page.deep_copy();

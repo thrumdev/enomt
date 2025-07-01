@@ -199,6 +199,10 @@ impl Store {
         })
     }
 
+    pub fn hash_table_seed(&self) -> [u8; 16] {
+        self.shared.pages.seed().clone()
+    }
+
     pub fn is_poisoned(&self) -> bool {
         self.shared
             .poisoned
