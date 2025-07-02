@@ -1,12 +1,13 @@
 use crate::{
     page::DEPTH,
     page_id::{ChildPageIndex, PageId, ROOT_PAGE_ID},
-    trie::KeyPath,
+    trie::{KeyPath, MAX_KEY_PATH_LEN},
 };
 use alloc::fmt;
 use bitvec::prelude::*;
 
-// TODO: update `path` to become a Vec<u8> without depth limitations
+// The maximum depth of the trie
+pub const MAX_TRIE_DEPTH: usize = MAX_KEY_PATH_LEN * 8;
 
 /// Encapsulates logic for moving around in paged storage for a binary trie.
 #[derive(Clone)]
@@ -17,7 +18,7 @@ use bitvec::prelude::*;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TriePosition {
     // The bits after depth are irrelevant.
-    path: [u8; 32],
+    path: Vec<u8>,
     depth: u16,
     node_index: usize,
 }
@@ -34,7 +35,7 @@ impl TriePosition {
     /// Create a new `TriePosition` at the root.
     pub fn new() -> Self {
         TriePosition {
-            path: [0; 32],
+            path: vec![],
             depth: 0,
             node_index: 0,
         }
@@ -45,35 +46,32 @@ impl TriePosition {
     /// Panics if depth is zero.
     pub fn from_path_and_depth(path: KeyPath, depth: u16) -> Self {
         assert_ne!(depth, 0, "depth must be non-zero");
-        assert!(depth <= 256);
-
-        // TODO: update to support var key len
-        assert_eq!(path.len(), 32);
-        let path = path.try_into().unwrap();
+        assert!(depth <= MAX_TRIE_DEPTH as u16);
 
         let page_path = last_page_path(&path, depth);
+        let node_index = node_index(&page_path);
         TriePosition {
             path,
             depth,
-            node_index: node_index(&page_path),
+            node_index,
         }
     }
 
     /// Create a new `TriePosition` based on a bitslice.
     pub fn from_bitslice(slice: &BitSlice<u8, Msb0>) -> Self {
-        assert!(slice.len() <= 256);
+        assert!(slice.len() <= MAX_TRIE_DEPTH);
 
-        // TODO: update to support var key len
-        let mut path = [0; 32];
+        let path_len = (slice.len() + 7) / 8;
+        let mut path = vec![0; path_len];
         path.view_bits_mut::<Msb0>()[..slice.len()].copy_from_bitslice(slice);
-        Self::from_path_and_depth(path.to_vec(), slice.len() as u16)
+        Self::from_path_and_depth(path, slice.len() as u16)
     }
 
     /// Parse a `TriePosition` from a bit string.
     #[cfg(test)]
     pub fn from_str(s: &str) -> Self {
         let mut bitvec = BitVec::<u8, Msb0>::new();
-        if s.len() > 256 {
+        if s.len() > MAX_TRIE_DEPTH {
             panic!("bit string too long");
         }
         for ch in s.chars() {
@@ -85,8 +83,10 @@ impl TriePosition {
         }
         let node_index = node_index(&bitvec);
         let depth = bitvec.len() as u16;
-        bitvec.resize(256, false);
-        // Unwrap: resized to 256 bit, or 32 bytes, above.
+
+        bitvec.resize(depth.next_multiple_of(8).into(), false);
+
+        // UNWRAP: bitvec resized to multiple of 8 bits
         let path = bitvec.as_raw_slice().try_into().unwrap();
         Self {
             path,
@@ -113,15 +113,19 @@ impl TriePosition {
     /// Get the raw key at the current position.
     ///
     /// Note that if you have called `up`, this might have bits beyond `depth` which are set.
-    pub fn raw_path(&self) -> [u8; 32] {
-        self.path
+    pub fn raw_path(&self) -> &Vec<u8> {
+        &self.path
     }
 
     /// Move the position down by 1, towards either the left or right child.
     ///
     /// Panics on depth out of range.
     pub fn down(&mut self, bit: bool) {
-        assert_ne!(self.depth, 256, "can't descend past 256 bits");
+        assert_ne!(
+            self.depth, MAX_TRIE_DEPTH as u16,
+            "can't descend past {MAX_TRIE_DEPTH} bits"
+        );
+
         if self.depth as usize % DEPTH == 0 {
             self.node_index = bit as usize;
         } else {
@@ -132,9 +136,16 @@ impl TriePosition {
                 children.left()
             };
         }
+
+        // Push a byte into the path if it is finished.
+        if self.depth as usize >= self.path.len() * 8 {
+            self.path.push(0);
+        }
+
         self.path
             .view_bits_mut::<Msb0>()
             .set(self.depth as usize, bit);
+
         self.depth += 1;
     }
 
@@ -281,7 +292,7 @@ impl TriePosition {
 }
 
 // extract the relevant portion of the key path to the last page. panics on empty path.
-fn last_page_path(path: &[u8; 32], depth: u16) -> &BitSlice<u8, Msb0> {
+fn last_page_path(path: &Vec<u8>, depth: u16) -> &BitSlice<u8, Msb0> {
     if depth == 0 {
         panic!();
     }
@@ -365,14 +376,9 @@ mod tests {
     use super::TriePosition;
 
     #[test]
-    fn path_can_go_deeper_255_bit() {
-        let mut p = TriePosition::from_str(
-            "1010101010101010101010101010101010101010101010101010101010101010\
-            1010101010101010101010101010101010101010101010101010101010101010\
-            1010101010101010101010101010101010101010101010101010101010101010\
-            101010101010101010101010101010101010101010101010101010101010101",
-        );
-        assert_eq!(p.depth as usize, 255);
+    fn path_can_go_deeper_8191_bit() {
+        let mut p = TriePosition::from_path_and_depth(vec![1; 1024], 8191);
+        assert_eq!(p.depth as usize, 8191);
         p.down(false);
     }
 }
