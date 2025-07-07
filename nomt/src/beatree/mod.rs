@@ -346,7 +346,9 @@ impl ValueChange {
         key: &Key,
         maybe_value: Option<Vec<u8>>,
     ) -> Result<Self> {
-        if key.len() > MAX_KEY_LEN {
+        if key.len() == 0 {
+            return Err(anyhow::anyhow!("Key cannot be empty",));
+        } else if key.len() > MAX_KEY_LEN {
             return Err(anyhow::anyhow!(
                 "Key exceeds limit: {}B > {}B",
                 key.len(),
@@ -822,6 +824,13 @@ mod tests {
             .is_err()
         );
         assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(&vec![], None).is_err()
+        );
+        assert!(
+            ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(&vec![], Some(vec![1]))
+                .is_err()
+        );
+        assert!(
             ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
                 &vec![1; MAX_KEY_LEN],
                 None
@@ -839,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_value_change_overflow_limit_adaptation() {
-        for key_len in (0..MAX_KEY_LEN).filter(|x| x % 7 == 0) {
+        for key_len in (1..MAX_KEY_LEN).filter(|x| x % 7 == 0) {
             for value_len in (0..MAX_LEAF_KEY_AND_VALUE_SIZE).filter(|x| x % 7 == 0) {
                 let res = ValueChange::from_option::<BinaryHasher<Blake3BinaryHasher>>(
                     &vec![1; key_len],
