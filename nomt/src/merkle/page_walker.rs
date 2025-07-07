@@ -331,6 +331,16 @@ impl<H: NodeHasher> PageWalker<H> {
 
         let start_position = self.position.clone();
 
+        let ops: Vec<_> = ops.into_iter().collect();
+        for window in ops.windows(2) {
+            let (k1, k2) = (&window[0].0, &window[1].0);
+            if k2.starts_with(k1) {
+                if k2[k1.len()..].iter().all(|p| *p == 0) {
+                    unimplemented!("FullPrefixKeys not handled yet");
+                }
+            }
+        }
+
         // replace sub-trie at the given position
         nomt_core::update::build_trie::<H>(self.position.depth() as usize, ops, |control| {
             let node = control.node();
