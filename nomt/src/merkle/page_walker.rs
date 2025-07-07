@@ -539,7 +539,13 @@ impl<H: NodeHasher> PageWalker<H> {
         let divisor_bit = (parent_page_id.depth() + 1) * DEPTH;
 
         let left_subtree_ops = std::iter::from_fn(|| {
-            ops.next_if(|(key_path, _)| !key_path.view_bits::<Msb0>()[divisor_bit])
+            ops.next_if(|(key_path, _)| {
+                !key_path
+                    .view_bits::<Msb0>()
+                    .get(divisor_bit)
+                    .map(|bit| *bit)
+                    .unwrap_or(false)
+            })
         });
         let mut left_subtree_position = position.clone();
         left_subtree_position.down(false);

@@ -19,7 +19,7 @@ use super::{
 };
 
 use nomt_core::{
-    page::DEPTH,
+    page::{self, DEPTH},
     page_id::{PageId, ROOT_PAGE_ID},
     trie::{self, KeyPath, Node, ValueHash},
     trie_pos::TriePosition,
@@ -129,10 +129,15 @@ impl SeekRequest {
         self.page_id = Some(page_id.clone());
 
         // take enough bits to get us to the end of this page.
-        let bits = self.key.view_bits::<Msb0>()[self.position.depth() as usize..]
-            .iter()
-            .by_vals()
-            .take(DEPTH);
+
+        // If key_path_bits.len() is smaller than self.position.depth,
+        // we can leave the bits untouched, so the key remains padded with zeros.
+        let mut bits = [false; DEPTH];
+        let key_path_bits = self.key.view_bits::<Msb0>();
+        let start = std::cmp::min(self.position.depth() as usize, key_path_bits.len());
+        for (idx, bit) in key_path_bits[start..].iter().enumerate().take(DEPTH) {
+            bits[idx] = *bit;
+        }
 
         for bit in bits {
             self.position.down(bit);
@@ -379,8 +384,7 @@ impl RequestState {
         overlay: &LiveOverlay,
         pos: &TriePosition,
     ) -> Self {
-        // TODO: core still uses [u8; 32] within the TriePosition. the `to_vec` will be removed
-        let (start, end) = range_bounds(pos.raw_path().to_vec(), pos.depth() as usize);
+        let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
         // First see if the item is present within the overlay.
         let overlay_item = overlay
@@ -416,8 +420,7 @@ impl RequestState {
         pos: &TriePosition,
         page: Page,
     ) -> Self {
-        // TODO: core still uses [u8; 32] within the TriePosition. the `to_vec` will be removed
-        let (start, end) = range_bounds(pos.raw_path().to_vec(), pos.depth() as usize);
+        let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
         let beatree_iterator = read_transaction.iterator(start.clone(), end.clone());
         let needed_leaves = beatree_iterator.needed_leaves();
@@ -431,11 +434,22 @@ impl RequestState {
     }
 }
 
-fn range_bounds(raw_path: KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
+// Given a trie position returns the range of keys that the subtree associated to
+// the tire position could contain, both start and end have trail zeros removed,
+// this because beatree could have keys associated to this subtree smaller than the
+// key path used to reach the position while for the end we just need the smalles
+// key bigger than what the range could contain.
+fn range_bounds(raw_path: &KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
     if depth == 0 {
         return (vec![0], None);
     }
-    let start = raw_path;
+
+    let remove_trailing_zeros = |key: &mut Vec<_>| match key.iter().rposition(|b| *b != 0) {
+        Some(idx) => key.truncate(idx + 1),
+        None => key.truncate(1),
+    };
+
+    let mut start = raw_path.clone();
     let mut end = start.clone();
     let mut depth = depth - 1;
     loop {
@@ -448,6 +462,7 @@ fn range_bounds(raw_path: KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
 
             // this is only reached when the start position has the form `111111...`.
             if depth == 0 {
+                remove_trailing_zeros(&mut start);
                 return (start, None);
             } else {
                 depth -= 1;
@@ -455,6 +470,8 @@ fn range_bounds(raw_path: KeyPath, depth: usize) -> (KeyPath, Option<KeyPath>) {
         }
     }
 
+    remove_trailing_zeros(&mut start);
+    remove_trailing_zeros(&mut end);
     (start, Some(end))
 }
 
@@ -913,39 +930,40 @@ mod tests {
         }
 
         let key_a = make_path(bitvec![u8, Msb0; 0, 0, 0, 0]);
-        assert_eq!(range_bounds(key_a.clone(), 0).1, None);
+        assert_eq!(range_bounds(&key_a, 0).1, None);
+
         assert_eq!(
-            range_bounds(key_a.clone(), 1).1,
+            range_bounds(&key_a, 1).1,
             Some(make_path(bitvec![u8, Msb0; 1]))
         );
         assert_eq!(
-            range_bounds(key_a.clone(), 2).1,
+            range_bounds(&key_a, 2).1,
             Some(make_path(bitvec![u8, Msb0; 0, 1]))
         );
         assert_eq!(
-            range_bounds(key_a.clone(), 3).1,
+            range_bounds(&key_a, 3).1,
             Some(make_path(bitvec![u8, Msb0; 0, 0, 1]))
         );
         assert_eq!(
-            range_bounds(key_a, 4).1,
+            range_bounds(&key_a, 4).1,
             Some(make_path(bitvec![u8, Msb0; 0, 0, 0, 1]))
         );
 
         let key_b = make_path(bitvec![u8, Msb0; 1, 1, 1, 1]);
-        assert_eq!(range_bounds(key_b.clone(), 0).1, None);
-        assert_eq!(range_bounds(key_b.clone(), 1).1, None);
-        assert_eq!(range_bounds(key_b.clone(), 2).1, None);
-        assert_eq!(range_bounds(key_b.clone(), 3).1, None);
-        assert_eq!(range_bounds(key_b, 4).1, None);
+        assert_eq!(range_bounds(&key_b, 0).1, None);
+        assert_eq!(range_bounds(&key_b, 1).1, None);
+        assert_eq!(range_bounds(&key_b, 2).1, None);
+        assert_eq!(range_bounds(&key_b, 3).1, None);
+        assert_eq!(range_bounds(&key_b, 4).1, None);
 
         let key_c = make_path(bitvec![u8, Msb0; 0, 1, 0]);
         assert_eq!(
-            range_bounds(key_c, 3).1,
+            range_bounds(&key_c, 3).1,
             Some(make_path(bitvec![u8, Msb0; 0, 1, 1]))
         );
         let key_d = make_path(bitvec![u8, Msb0; 0, 1, 0, 1]);
         assert_eq!(
-            range_bounds(key_d, 4).1,
+            range_bounds(&key_d, 4).1,
             Some(make_path(bitvec![u8, Msb0; 0, 1, 1, 0]))
         );
     }

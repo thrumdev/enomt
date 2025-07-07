@@ -75,9 +75,9 @@ fn fill_and_empty(seed: [u8; 16], commit_concurrency: usize) {
     assert!(t.commit().0.is_empty());
 }
 
-// TODO: update with random var key size when they will be fully supported
 fn rand_key(rng: &mut impl Rng) -> Vec<u8> {
-    let mut key = vec![0; 32];
+    let key_len = rng.gen_range(1..1024);
+    let mut key = vec![0; key_len];
     rng.fill(&mut key[..]);
     key
 }
