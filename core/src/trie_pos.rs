@@ -286,8 +286,15 @@ impl TriePosition {
     /// Whether the sub-trie indicated by this position would contain
     /// a given key-path.
     pub fn subtrie_contains(&self, path: &crate::trie::KeyPath) -> bool {
-        path.view_bits::<Msb0>()
-            .starts_with(&self.path.view_bits::<Msb0>()[..self.depth as usize])
+        let path_bits = path.view_bits::<Msb0>();
+        let min_depth = std::cmp::min(self.depth as usize, path_bits.len());
+        // A key that is part of a node's subtree must have the path to
+        // the subtree as a prefix. The key can be smaller in bytes than
+        // the path, but it is always padded with zeros.
+        if !path_bits[..min_depth].starts_with(&self.path.view_bits::<Msb0>()[..min_depth]) {
+            return false;
+        }
+        self.path.view_bits::<Msb0>()[min_depth..].not_any()
     }
 }
 
@@ -374,11 +381,40 @@ impl ChildNodeIndices {
 #[cfg(test)]
 mod tests {
     use super::TriePosition;
+    use bitvec::prelude::*;
 
     #[test]
     fn path_can_go_deeper_8191_bit() {
         let mut p = TriePosition::from_path_and_depth(vec![1; 1024], 8191);
         assert_eq!(p.depth as usize, 8191);
         p.down(false);
+    }
+
+    #[test]
+    fn test_subtrie_contains() {
+        // Each prefix of a key refers to a subtree root which contains the key itself
+        let key = vec![124, 57, 98];
+        for i in 1..key.len() * 8 {
+            let pos = TriePosition::from_bitslice(&key.view_bits::<Msb0>()[0..i]);
+            assert!(pos.subtrie_contains(&key));
+        }
+
+        // A single bit change will not make it anymore part of the subtree
+        let key = vec![124, 73, 82];
+        for i in 1..key.len() * 8 {
+            let mut path = key.view_bits::<Msb0>()[0..i].to_bitvec();
+            let idx = path.len() / 2;
+            let replace_bit = !path.get(idx).unwrap();
+            path.set(idx, replace_bit);
+            let pos = TriePosition::from_bitslice(&path);
+            assert!(!pos.subtrie_contains(&key));
+        }
+
+        // Key being shorter than the path
+        let pos = TriePosition::from_bitslice(bits![u8, Msb0; 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        let key = vec![4];
+        assert!(pos.subtrie_contains(&key));
+        let pos = TriePosition::from_bitslice(bits![u8, Msb0; 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]);
+        assert!(!pos.subtrie_contains(&key));
     }
 }

@@ -13,6 +13,32 @@ pub(crate) fn shared_bits(a: &BitSlice<u8, Msb0>, b: &BitSlice<u8, Msb0>) -> usi
     a.iter().zip(b.iter()).take_while(|(a, b)| a == b).count()
 }
 
+fn common_after_prefix(k1: &KeyPath, k2: &KeyPath, skip: usize) -> usize {
+    let (k_min, k_max) = if k1.len() < k2.len() {
+        (k1.view_bits::<Msb0>(), k2.view_bits::<Msb0>())
+    } else {
+        (k2.view_bits::<Msb0>(), k1.view_bits::<Msb0>())
+    };
+
+    if k_min.len() < skip {
+        // If k_min is smaller than skip, it is expected to be padded with zeros.
+        // Thus, the number of shared bits will be the number of leading zeros
+        // in k_max after skip.
+        if k_max.len() < skip {
+            // This is not reachable, this would be a case of a full shared prefix.
+            unreachable!()
+        }
+        return k_max[skip..].leading_zeros();
+    }
+
+    let mut shared_bits = shared_bits(&k_min[skip..], &k_max[skip..]);
+    if shared_bits == k_min.len() - skip {
+        // count the possibly shared padded zeros
+        shared_bits += k_max[skip + shared_bits..].leading_zeros()
+    }
+    shared_bits
+}
+
 /// Creates an iterator of all provided operations, with the leaf value spliced in if its key
 /// does not appear in the original ops list. Then filters out all `None`s.
 pub fn leaf_ops_spliced(
@@ -159,15 +185,13 @@ pub fn build_trie<H: NodeHasher>(
         _ => {}
     }
 
-    let common_after_prefix = |k1: &KeyPath, k2: &KeyPath| {
-        let x = &k1.view_bits::<Msb0>()[skip..];
-        let y = &k2.view_bits::<Msb0>()[skip..];
-        shared_bits(x, y)
-    };
-
-    while let Some((this_key, this_val)) = b {
-        let n1 = a.as_ref().map(|(k, _)| common_after_prefix(k, &this_key));
-        let n2 = c.as_ref().map(|(k, _)| common_after_prefix(k, &this_key));
+    while let Some((mut this_key, this_val)) = b {
+        let n1 = a
+            .as_ref()
+            .map(|(k, _)| common_after_prefix(k, &this_key, skip));
+        let n2 = c
+            .as_ref()
+            .map(|(k, _)| common_after_prefix(k, &this_key, skip));
 
         let leaf_data = trie::LeafDataRef {
             key_path: &this_key,
@@ -198,14 +222,19 @@ pub fn build_trie<H: NodeHasher>(
         let down_start = skip + n1.unwrap_or(0);
         let leaf_end_bit = skip + leaf_depth;
 
+        let mut bits = this_key.view_bits::<Msb0>().to_bitvec();
+        if bits.len() < leaf_end_bit {
+            bits.extend(std::iter::repeat(false).take(leaf_end_bit - bits.len()));
+        }
+
         visit(WriteNode::Leaf {
             up: n1.is_some(), // previous iterations always get to current layer + 1
-            down: &this_key.view_bits::<Msb0>()[down_start..leaf_end_bit],
+            down: &bits[down_start..leaf_end_bit],
             node: leaf,
             leaf_data,
         });
 
-        for bit in this_key.view_bits::<Msb0>()[skip..leaf_end_bit]
+        for bit in bits[skip..leaf_end_bit]
             .iter()
             .by_vals()
             .rev()
@@ -254,7 +283,9 @@ pub fn build_trie<H: NodeHasher>(
 
 #[cfg(test)]
 mod tests {
-    use crate::trie::{NodeKind, TERMINATOR};
+    use bitvec::view::BitView;
+
+    use crate::trie::{KeyPath, NodeKind, TERMINATOR};
 
     use super::{bitvec, build_trie, trie, BitVec, LeafData, Msb0, Node, NodeHasher, WriteNode};
 
@@ -336,7 +367,7 @@ mod tests {
         fn visit(&mut self, control: WriteNode) {
             let n = self.key.len() - control.up() as usize;
             self.key.truncate(n);
-            self.key.extend_from_bitslice(control.down());
+            self.key.extend_from_bitslice(&control.down());
             self.visited.push((self.key.clone(), control.node()));
         }
     }
@@ -452,5 +483,28 @@ mod tests {
         );
 
         assert_eq!(root, branch_abc_de_hash);
+    }
+
+    #[test]
+    fn test_common_after_prefix() {
+        let k1 = vec![12, 56, 32];
+        let k2 = vec![12, 56, 16];
+        assert_eq!(2, super::common_after_prefix(&k1, &k2, 16));
+
+        let k1 = vec![12, 56, 0b11001100];
+        let k2 = vec![12, 56, 0b11000100];
+        assert_eq!(12, super::common_after_prefix(&k1, &k2, 8));
+
+        let k1 = vec![12, 56];
+        let k2 = vec![12, 56, 0b00000001];
+        assert_eq!(15, super::common_after_prefix(&k1, &k2, 8));
+
+        let k2 = vec![12, 56, 0b00000001];
+        let k1 = vec![12, 56];
+        assert_eq!(15, super::common_after_prefix(&k1, &k2, 8));
+
+        let k1 = vec![12, 56];
+        let k2 = vec![12, 56, 0b00000001];
+        assert_eq!(6, super::common_after_prefix(&k1, &k2, 17));
     }
 }
