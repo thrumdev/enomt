@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "core",
     "nomt",
-    "fuzz",
+    #"fuzz",
     "torture",
     "examples/*",
     "trickfs",

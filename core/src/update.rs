@@ -185,7 +185,7 @@ pub fn build_trie<H: NodeHasher>(
         _ => {}
     }
 
-    while let Some((mut this_key, this_val)) = b {
+    while let Some((this_key, this_val)) = b {
         let n1 = a
             .as_ref()
             .map(|(k, _)| common_after_prefix(k, &this_key, skip));
@@ -283,9 +283,7 @@ pub fn build_trie<H: NodeHasher>(
 
 #[cfg(test)]
 mod tests {
-    use bitvec::view::BitView;
-
-    use crate::trie::{KeyPath, NodeKind, TERMINATOR};
+    use crate::trie::{NodeKind, TERMINATOR};
 
     use super::{bitvec, build_trie, trie, BitVec, LeafData, Msb0, Node, NodeHasher, WriteNode};
 
