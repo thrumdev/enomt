@@ -19,7 +19,7 @@ use super::{
 };
 
 use nomt_core::{
-    page::{self, DEPTH},
+    page::DEPTH,
     page_id::{PageId, ROOT_PAGE_ID},
     trie::{self, KeyPath, Node, ValueHash},
     trie_pos::TriePosition,

@@ -229,10 +229,9 @@ mod tests {
     use crate::{page_id::MAX_PAGE_DEPTH, trie::MAX_KEY_PATH_LEN};
 
     use super::{
-        ChildPageIdError, ChildPageIndex, InvalidPageIdBytes, Msb0, PageId, PageIdsIterator, Uint,
+        ChildPageIdError, ChildPageIndex, InvalidPageIdBytes, Msb0, PageId, PageIdsIterator,
         MAX_CHILD_INDEX, ROOT_PAGE_ID,
     };
-    use arrayvec::ArrayVec;
     use bitvec::prelude::*;
 
     fn child_page_id(page_id: &PageId, child_index: u8) -> Result<PageId, ChildPageIdError> {
@@ -281,7 +280,7 @@ mod tests {
     #[test]
     fn test_page_ids_iterator() {
         // key_path = 0b000001|000010|0...
-        let mut key_path = vec![0b00000100, 0b00100000];
+        let key_path = vec![0b00000100, 0b00100000];
 
         let page_id_1 = vec![0b000001];
         let page_id_1 = PageId::decode(&page_id_1).unwrap();
