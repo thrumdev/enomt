@@ -785,9 +785,7 @@ pub mod tests {
         leaf::node::{body_size, MAX_LEAF_KEY_AND_VALUE_SIZE},
         ops::{
             search_leaf,
-            update::{
-                branch_updater::tests::prefixed_key, leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD,
-            },
+            update::{leaf_updater::LeafGauge, LEAF_MERGE_THRESHOLD},
         },
     };
 

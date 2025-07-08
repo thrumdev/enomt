@@ -18,7 +18,7 @@ fn root_on_leaf() {
     {
         let mut t = Test::new("compute_root_leaf");
         t.write(vec![1; 32], Some(vec![1, 2, 3]));
-        let (root, _) = t.commit();
+        t.commit();
     }
 
     let t = Test::new_with_params("compute_root_leaf", 1, 1, None, false);
