@@ -286,15 +286,16 @@ impl TriePosition {
     /// Whether the sub-trie indicated by this position would contain
     /// a given key-path.
     pub fn subtrie_contains(&self, path: &crate::trie::KeyPath) -> bool {
+        let subtree_root_path_bits = self.path.view_bits::<Msb0>();
         let path_bits = path.view_bits::<Msb0>();
         let min_depth = std::cmp::min(self.depth as usize, path_bits.len());
         // A key that is part of a node's subtree must have the path to
         // the subtree as a prefix. The key can be smaller in bytes than
         // the path, but it is always padded with zeros.
-        if !path_bits[..min_depth].starts_with(&self.path.view_bits::<Msb0>()[..min_depth]) {
+        if !path_bits[..min_depth].starts_with(&subtree_root_path_bits[..min_depth]) {
             return false;
         }
-        self.path.view_bits::<Msb0>()[min_depth..].not_any()
+        subtree_root_path_bits[min_depth..].not_any()
     }
 }
 

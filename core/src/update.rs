@@ -34,6 +34,8 @@ fn common_after_prefix(k1: &KeyPath, k2: &KeyPath, skip: usize) -> usize {
     let mut shared_bits = shared_bits(&k_min[skip..], &k_max[skip..]);
     if shared_bits == k_min.len() - skip {
         // count the possibly shared padded zeros
+        // NOTE: No FullPrefixSubtrees are expected here, thus,
+        // k_max is not expected to be filled with zeros
         shared_bits += k_max[skip + shared_bits..].leading_zeros()
     }
     shared_bits
