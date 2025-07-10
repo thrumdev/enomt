@@ -1,7 +1,9 @@
 //! Proving and verifying inclusion, non-inclusion, and updates to the trie.
 
 use crate::hasher::NodeHasher;
-use crate::trie::{self, InternalData, KeyPath, LeafData, Node, NodeKind, TERMINATOR};
+use crate::trie::{
+    self, InternalData, KeyPath, LeafData, Node, NodeKind, MAX_KEY_PATH_LEN, TERMINATOR,
+};
 use crate::trie_pos::TriePosition;
 
 use bitvec::prelude::*;
@@ -77,15 +79,20 @@ impl PathProof {
         key_path: &BitSlice<u8, Msb0>,
         root: Node,
     ) -> Result<VerifiedPathProof, PathProofVerificationError> {
-        // TODO: support var len keys
-        if self.siblings.len() > core::cmp::min(key_path.len(), 256) {
+        if self.siblings.len() > core::cmp::min(key_path.len(), MAX_KEY_PATH_LEN * 8) {
             return Err(PathProofVerificationError::TooManySiblings);
         }
-        let relevant_path = &key_path[..self.siblings.len()];
+
+        let mut relevant_path = key_path.to_bitvec();
+        relevant_path.resize_with(self.siblings.len(), |_| false);
 
         let cur_node = self.terminal.node::<H>();
 
-        let new_root = hash_path::<H>(cur_node, relevant_path, self.siblings.iter().rev().cloned());
+        let new_root = hash_path::<H>(
+            cur_node,
+            &relevant_path,
+            self.siblings.iter().rev().cloned(),
+        );
 
         if new_root == root {
             Ok(VerifiedPathProof {
@@ -203,9 +210,8 @@ impl VerifiedPathProof {
     }
 
     fn in_scope(&self, key_path: &KeyPath) -> Result<(), KeyOutOfScope> {
-        let this_path = self.path();
-        let other_path = &key_path.view_bits::<Msb0>()[..self.key_path.len()];
-        if this_path == other_path {
+        let terminal_position = TriePosition::from_bitslice(self.path());
+        if terminal_position.subtrie_contains(key_path) {
             Ok(())
         } else {
             Err(KeyOutOfScope)
@@ -265,6 +271,7 @@ impl fmt::Debug for PathUpdate {
 ///
 /// Returns the root of the trie obtained after application of the given updates in the `paths`
 /// vector. In case the `paths` is empty, `prev_root` is returned.
+// TODO: adapt to FullPrefixSubstree handling
 pub fn verify_update<H: NodeHasher>(
     prev_root: Node,
     paths: &[PathUpdate],
@@ -295,7 +302,12 @@ pub fn verify_update<H: NodeHasher>(
                 return Err(VerifyUpdateError::OpsOutOfOrder);
             }
 
-            if !key.view_bits::<Msb0>().starts_with(path.inner.path()) {
+            let path = path.inner.path();
+            if path.len() == 0 {
+                continue;
+            }
+
+            if !TriePosition::from_bitslice(path).subtrie_contains(key) {
                 return Err(VerifyUpdateError::OpOutOfScope);
             }
         }
@@ -327,9 +339,13 @@ pub fn verify_update<H: NodeHasher>(
         // iterate siblings up to the point of collision with next path, replacing with pending
         // siblings, and compacting where possible.
         // push (node, end_layer) to pending siblings when done.
-        for (bit, sibling) in path
-            .inner
-            .path()
+
+        let mut bit_path = path.inner.path().to_bitvec();
+        if bit_path.len() < up_layers {
+            bit_path.resize_with(up_layers, |_| false);
+        }
+
+        for (bit, sibling) in bit_path
             .iter()
             .by_vals()
             .rev()
@@ -376,7 +392,22 @@ pub fn verify_update<H: NodeHasher>(
     Ok(pending_siblings.pop().map(|n| n.0).unwrap())
 }
 
-// TODO: dedup, this appears in `update` as well.
-pub fn shared_bits(a: &BitSlice<u8, Msb0>, b: &BitSlice<u8, Msb0>) -> usize {
-    a.iter().zip(b.iter()).take_while(|(a, b)| a == b).count()
+pub fn shared_bits(k1: &BitSlice<u8, Msb0>, k2: &BitSlice<u8, Msb0>) -> usize {
+    let (k_min, k_max) = if k1.len() < k2.len() {
+        (k1, k2)
+    } else {
+        (k2, k1)
+    };
+
+    let mut shared_bits = k_min
+        .iter()
+        .zip(k_max.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    if shared_bits == k_min.len() {
+        // count the possibly shared padded zeros
+        shared_bits += k_max[shared_bits..].leading_zeros()
+    }
+    shared_bits
 }

@@ -9,6 +9,7 @@ use crate::{
         KeyOutOfScope, PathProof, PathProofTerminal,
     },
     trie::{InternalData, KeyPath, LeafData, Node, NodeKind, ValueHash, TERMINATOR},
+    trie_pos::TriePosition,
 };
 
 #[cfg(not(feature = "std"))]
@@ -118,7 +119,16 @@ impl PathProofRange {
         let path_lower = path_proofs[self.lower].terminal.path();
         let path_upper = path_proofs[self.upper - 1].terminal.path();
 
-        if path_lower[self.path_bit_index] != path_upper[self.path_bit_index] {
+        let bit_lower: bool = path_lower
+            .get(self.path_bit_index)
+            .map(|b| *b)
+            .unwrap_or(false);
+        let bit_upper = path_upper
+            .get(self.path_bit_index)
+            .map(|b| *b)
+            .unwrap_or(false);
+
+        if bit_lower != bit_upper {
             // if they differ we can skip their siblings but we need to bisect the slice
             //
             // binary search between key_paths in the slice to see where to
@@ -133,7 +143,14 @@ impl PathProofRange {
             let mid = self.lower
                 + path_proofs[self.lower..self.upper]
                     .binary_search_by(|path_proof| {
-                        if !path_proof.terminal.path()[self.path_bit_index] {
+                        let bit = path_proof
+                            .terminal
+                            .path()
+                            .get(self.path_bit_index)
+                            .map(|b| *b)
+                            .unwrap_or(false);
+
+                        if !bit {
                             core::cmp::Ordering::Less
                         } else {
                             core::cmp::Ordering::Greater
@@ -301,15 +318,16 @@ pub struct VerifiedMultiProof {
     root: Node,
 }
 
+// TODO: adapt to FullPrefixSubstree handling
 impl VerifiedMultiProof {
     /// Find the index of the path contained in this multi-proof, if any, which would prove
     /// the given key.
     ///
     /// Runtime is O(log(n)) in the number of paths this multi-proof contains.
     pub fn find_index_for(&self, key_path: &KeyPath) -> Result<usize, KeyOutOfScope> {
-        let search_result = self.inner.binary_search_by(|v| {
-            v.terminal.path()[..v.depth].cmp(&key_path.view_bits::<Msb0>()[..v.depth])
-        });
+        let search_result = self
+            .inner
+            .binary_search_by(|v| v.terminal.path().cmp(&key_path.view_bits::<Msb0>()));
 
         search_result.map_err(|_| KeyOutOfScope)
     }
@@ -356,8 +374,14 @@ impl VerifiedMultiProof {
         index: usize,
     ) -> Result<bool, KeyOutOfScope> {
         let path = &self.inner[index];
-        let depth = path.depth;
-        let in_scope = path.terminal.path()[..depth] == key_path.view_bits::<Msb0>()[..depth];
+        let mut terminal_bit_path = path.terminal.path().to_bitvec();
+        let terminal_depth = path.depth;
+
+        if terminal_bit_path.len() < terminal_depth {
+            terminal_bit_path.resize_with(terminal_depth, |_| false);
+        }
+        let terminal_position = TriePosition::from_bitslice(&terminal_bit_path[..terminal_depth]);
+        let in_scope = terminal_position.subtrie_contains(&key_path);
 
         if in_scope {
             Ok(self.confirm_nonexistence_inner(key_path, index))
@@ -384,9 +408,14 @@ impl VerifiedMultiProof {
         index: usize,
     ) -> Result<bool, KeyOutOfScope> {
         let path = &self.inner[index];
-        let depth = path.depth;
-        let in_scope =
-            path.terminal.path()[..depth] == expected_leaf.key_path.view_bits::<Msb0>()[..depth];
+        let mut terminal_bit_path = path.terminal.path().to_bitvec();
+        let terminal_depth = path.depth;
+
+        if terminal_bit_path.len() < terminal_depth {
+            terminal_bit_path.resize_with(terminal_depth, |_| false);
+        }
+        let terminal_position = TriePosition::from_bitslice(&terminal_bit_path[..terminal_depth]);
+        let in_scope = terminal_position.subtrie_contains(&expected_leaf.key_path);
 
         if in_scope {
             Ok(self.confirm_value_inner(&expected_leaf, index))
@@ -452,7 +481,7 @@ pub fn verify<H: NodeHasher>(
         inner: verified_paths,
         bisections: verified_bisections,
         siblings: multi_proof.siblings.clone(),
-        root: root,
+        root,
     })
 }
 
@@ -481,9 +510,15 @@ fn verify_range<H: NodeHasher>(
         let terminal_path = &paths[0];
         let unique_len = terminal_path.depth - start_depth;
 
+        let mut terminal_bit_path = terminal_path.terminal.path().to_bitvec();
+        if terminal_bit_path.len() > start_depth {
+            terminal_bit_path.drain(..start_depth);
+        }
+        terminal_bit_path.resize_with(unique_len, |_| false);
+
         let node = hash_path::<H>(
             terminal_path.terminal.node::<H>(),
-            &terminal_path.terminal.path()[start_depth..start_depth + unique_len],
+            &terminal_bit_path,
             siblings[..unique_len].iter().rev().copied(),
         );
 
@@ -502,20 +537,20 @@ fn verify_range<H: NodeHasher>(
     let start_path = &paths[0];
     let end_path = &paths[paths.len() - 1];
 
-    let common_bits = shared_bits(
-        &start_path.terminal.path()[start_depth..],
-        &end_path.terminal.path()[start_depth..],
-    );
-
-    // TODO: support var len keys
-    let common_len = start_depth + common_bits;
-    // TODO: if `common_len` == 256 the multi-proof is malformed. error
+    let common_len = shared_bits(&start_path.terminal.path(), &end_path.terminal.path());
+    let common_bits_after_start = common_len - start_depth;
 
     let uncommon_start_len = common_len + 1;
 
     // bisect `paths` by finding the first path which starts with the right bit set.
     let search_result = paths.binary_search_by(|item| {
-        if !item.terminal.path()[uncommon_start_len - 1] {
+        if !item
+            .terminal
+            .path()
+            .get(uncommon_start_len - 1)
+            .map(|b| *b)
+            .unwrap_or(false)
+        {
             Ordering::Less
         } else {
             Ordering::Greater
@@ -528,12 +563,12 @@ fn verify_range<H: NodeHasher>(
     // bisection is based off of them.
     let bisect_idx = search_result.unwrap_err();
 
-    if common_bits > 0 {
+    if common_bits_after_start > 0 {
         verified_bisections.push(VerifiedBisection {
             start_depth,
             common_siblings: Range {
                 start: sibling_offset,
-                end: sibling_offset + common_bits,
+                end: sibling_offset + common_bits_after_start,
             },
         });
     }
@@ -542,8 +577,8 @@ fn verify_range<H: NodeHasher>(
     let (left_node, left_siblings_used) = verify_range::<H>(
         uncommon_start_len,
         &paths[..bisect_idx],
-        &siblings[common_bits..],
-        sibling_offset + common_bits,
+        &siblings[common_bits_after_start..],
+        sibling_offset + common_bits_after_start,
         verified_paths,
         verified_bisections,
     )?;
@@ -552,21 +587,25 @@ fn verify_range<H: NodeHasher>(
     let (right_node, right_siblings_used) = verify_range::<H>(
         uncommon_start_len,
         &paths[bisect_idx..],
-        &siblings[common_bits + left_siblings_used..],
-        sibling_offset + common_bits + left_siblings_used,
+        &siblings[common_bits_after_start + left_siblings_used..],
+        sibling_offset + common_bits_after_start + left_siblings_used,
         verified_paths,
         verified_bisections,
     )?;
 
-    let total_siblings_used = common_bits + left_siblings_used + right_siblings_used;
+    let total_siblings_used = common_bits_after_start + left_siblings_used + right_siblings_used;
     // hash up the internal node composed of left/right, then repeatedly apply common siblings.
+
+    let mut start_bit_path = start_path.terminal.path()[start_depth..].to_bitvec();
+    start_bit_path.resize_with(common_len - start_depth, |_| false);
+
     let node = hash_path::<H>(
         H::hash_internal(&InternalData {
             left: left_node,
             right: right_node,
         }),
-        &start_path.terminal.path()[start_depth..common_len], // == last_path.same...
-        siblings[..common_bits].iter().rev().copied(),
+        &start_bit_path, // == last_path.same...
+        siblings[..common_bits_after_start].iter().rev().copied(),
     );
     Ok((node, total_siblings_used))
 }
@@ -585,7 +624,17 @@ pub enum MultiVerifyUpdateError {
 }
 
 fn terminal_contains(terminal: &VerifiedMultiPath, key_path: &KeyPath) -> bool {
-    key_path.view_bits::<Msb0>()[..terminal.depth] == terminal.terminal.path()[..terminal.depth]
+    if terminal.depth == 0 {
+        return true;
+    }
+
+    let mut terminal_bit_path = terminal.terminal.path().to_bitvec();
+    if terminal_bit_path.len() < terminal.depth {
+        terminal_bit_path.resize_with(terminal.depth, |_| false);
+    }
+
+    let terminal_position = TriePosition::from_bitslice(&terminal_bit_path[..terminal.depth]);
+    terminal_position.subtrie_contains(&key_path)
 }
 
 // walks a multiproof left-to-right and keeps track of a stack of all siblings, based on
@@ -694,6 +743,7 @@ impl CommonSiblings {
 ///
 /// Returns the root of the trie obtained after application of the given updates in the `paths`
 /// vector. In case the `paths` is empty, `prev_root` is returned.
+// TODO: adapt to FullPrefixSubstree handling
 pub fn verify_update<H: NodeHasher>(
     proof: &VerifiedMultiProof,
     ops: Vec<(KeyPath, Option<ValueHash>)>,
@@ -830,10 +880,11 @@ fn hash_and_compact_terminal<H: NodeHasher>(
 
     let up_layers = if let Some(next_terminal) = next_terminal {
         let n = shared_bits(terminal.terminal.path(), next_terminal.terminal.path());
-
         // SANITY: this is impossible in a well-formed input but we catch it as an error.
         // The reason this is impossible is because no terminal should be a prefix of another
         // terminal (by definition)
+        // TODO: this is clearly wrong with FullPrefixSubtree, but they will be treated separately.
+        // Thus, this function should continue to work on the same assumption.
         if n == skip {
             return Err(MultiVerifyUpdateError::PathPrefixOfAnother);
         }
@@ -852,15 +903,13 @@ fn hash_and_compact_terminal<H: NodeHasher>(
     let mut cur_layer = skip;
     let end_layer = skip - up_layers;
 
+    let mut terminal_bit_path = terminal.terminal.path().to_bitvec();
+    terminal_bit_path.resize_with(terminal.depth, |_| false);
+
     // iterate siblings up to the point of collision with next path, replacing with pending
     // siblings, and compacting where possible.
     // push (node, end_layer) to pending siblings when done.
-    for bit in terminal.terminal.path()[..terminal.depth]
-        .iter()
-        .by_vals()
-        .rev()
-        .take(up_layers)
-    {
+    for bit in terminal_bit_path.iter().by_vals().rev().take(up_layers) {
         let sibling = if pending_siblings.last().map_or(false, |p| p.1 == cur_layer) {
             // is this even possible? maybe not. but being extra cautious...
             let _ = common_siblings.pop_if_at_depth(cur_layer);
