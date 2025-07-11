@@ -330,7 +330,8 @@ pub fn verify_update<H: NodeHasher>(
             }
         };
 
-        let ops = crate::update::leaf_ops_spliced(leaf, &ops);
+        // TODO: Handle Collisions
+        let ops = crate::update::leaf_ops_spliced(leaf, &ops).map(|(k, v)| (k, v, false));
         let sub_root = crate::update::build_trie::<H>(skip, ops, |_| {});
 
         let mut cur_node = sub_root;
