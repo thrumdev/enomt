@@ -931,6 +931,8 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
                 return H::hash_leaf(&LeafData {
                     key_path,
                     value_hash: H::hash_value(value),
+                    // TODO: Make sure this is correctly handled.
+                    collision: false,
                 });
             }
             Some(beatree::iterator::IterOutput::OverflowItem(key_path, value_hash, _)) => {
@@ -938,6 +940,8 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
                 return H::hash_leaf(&LeafData {
                     key_path,
                     value_hash,
+                    // TODO: Make sure this is correctly handled.
+                    collision: false,
                 });
             }
         }

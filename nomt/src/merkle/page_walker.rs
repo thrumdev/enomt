@@ -1480,6 +1480,7 @@ mod tests {
             Blake3Hasher::hash_leaf(&trie::LeafData {
                 key_path,
                 value_hash: val,
+                collision: false,
             })
         };
 

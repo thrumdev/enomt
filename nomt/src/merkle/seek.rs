@@ -220,6 +220,7 @@ impl SeekRequest {
         self.state = RequestState::Completed(Some(trie::LeafData {
             key_path: key,
             value_hash,
+            collision: false,
         }));
     }
 
@@ -407,6 +408,7 @@ impl RequestState {
             return RequestState::Completed(Some(trie::LeafData {
                 key_path,
                 value_hash,
+                collision: false,
             }));
         }
 
