@@ -411,6 +411,8 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
         match ops {
             None => self.page_walker.advance(seek_result.position.clone()),
             Some(ref ops) => {
+                // TODO: this function will need to be updated to not only handle
+                // prev|leaf|after but also prev|container_keys|after
                 let ops = nomt_core::update::leaf_ops_spliced(seek_result.terminal.clone(), &ops);
                 self.page_walker
                     .advance_and_replace(page_set, seek_result.position.clone(), ops)

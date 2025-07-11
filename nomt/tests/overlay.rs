@@ -7,7 +7,7 @@ fn expected_root(items: Vec<(Vec<u8>, Vec<u8>)>) -> nomt_core::trie::Node {
         0,
         items
             .into_iter()
-            .map(|(k, v)| (k, *blake3::hash(&v).as_bytes())),
+            .map(|(k, v)| (k, *blake3::hash(&v).as_bytes(), false /*collision*/)),
         |_| {},
     )
 }

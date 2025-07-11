@@ -29,9 +29,15 @@ pub fn account_path(id: u64) -> KeyPath {
 pub fn expected_root(accounts: u64) -> Node {
     let mut ops = (0..accounts)
         .map(account_path)
-        .map(|a| (a, *blake3::hash(&1000u64.to_le_bytes()).as_bytes()))
+        .map(|a| {
+            (
+                a,
+                *blake3::hash(&1000u64.to_le_bytes()).as_bytes(),
+                false, /* collision */
+            )
+        })
         .collect::<Vec<_>>();
-    ops.sort_unstable_by_key(|(a, _)| a.clone());
+    ops.sort_unstable_by_key(|(a, _, _)| a.clone());
     nomt_core::update::build_trie::<nomt::hasher::Blake3Hasher>(0, ops, |_| {})
 }
 
