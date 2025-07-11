@@ -75,7 +75,7 @@ fn test_rollback_to_initial() {
 
     assert_eq!(
         nomt.root().into_inner(),
-        hex!("c6e25744545ddabdaf0a95201f8285e670ee9b3e0c1ced4a3006baafd1ac2fdf")
+        hex!("46e25744545ddabdaf0a95201f8285e670ee9b3e0c1ced4a3006baafd1ac2fdf")
     );
 
     let result = nomt.rollback(1);

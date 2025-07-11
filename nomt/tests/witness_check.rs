@@ -114,6 +114,7 @@ fn witness_with_var_len_keys() {
                     let leaf = LeafData {
                         key_path: read.key.clone(),
                         value_hash: *v,
+                        collision: false,
                     };
                     assert!(verified.confirm_value(&leaf).unwrap());
                 }
@@ -177,6 +178,7 @@ fn mutliproof_with_var_len_keys() {
                 let leaf = LeafData {
                     key_path: read.key.clone(),
                     value_hash: *v,
+                    collision: false,
                 };
                 assert!(verified_multi_proof.confirm_value(&leaf).unwrap());
                 assert!(verified_multi_proof
@@ -257,6 +259,7 @@ fn produced_witness_validity() {
                     let leaf = LeafData {
                         key_path: read.key.clone(),
                         value_hash: *v,
+                        collision: false,
                     };
                     assert!(verified.confirm_value(&leaf).unwrap());
                 }

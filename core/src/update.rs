@@ -168,11 +168,12 @@ pub fn build_trie<H: NodeHasher>(
             visit(WriteNode::Terminator);
             return trie::TERMINATOR;
         }
-        (Some((ref k, ref v)), None) => {
+        (Some((k, v)), None) => {
             // fast path: place single leaf.
             let leaf_data = trie::LeafDataRef {
                 key_path: &k,
                 value_hash: *v,
+                collision: false,
             };
             let leaf = H::hash_leaf_ref(&leaf_data);
             visit(WriteNode::Leaf {
@@ -198,6 +199,7 @@ pub fn build_trie<H: NodeHasher>(
         let leaf_data = trie::LeafDataRef {
             key_path: &this_key,
             value_hash: this_val,
+            collision: false,
         };
         let leaf = H::hash_leaf_ref(&leaf_data);
         let (leaf_depth, hash_up_layers) = match (n1, n2) {
@@ -299,7 +301,12 @@ mod tests {
             let mut hash: [u8; 32] = hasher.finalize().into();
 
             // Label with MSB
-            hash[0] |= 0b10000000;
+            hash[0] &= 0b00111111;
+            if data.collision {
+                hash[0] |= 0b10000000;
+            } else {
+                hash[0] |= 0b01000000;
+            }
             hash
         }
 
@@ -307,6 +314,7 @@ mod tests {
             Self::hash_leaf(&LeafData {
                 key_path: data.key_path.clone(),
                 value_hash: data.value_hash,
+                collision: data.collision,
             })
         }
 
@@ -317,7 +325,7 @@ mod tests {
             let mut hash: [u8; 32] = hasher.finalize().into();
 
             // Label with MSB
-            hash[0] &= 0b01111111;
+            hash[0] &= 0b00111111;
             hash
         }
 
@@ -337,6 +345,7 @@ mod tests {
         let leaf = trie::LeafData {
             key_path: key.to_vec(),
             value_hash: key.clone(),
+            collision: false,
         };
 
         let hash = DummyNodeHasher::hash_leaf(&leaf);

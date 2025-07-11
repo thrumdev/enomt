@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 /// for the terminator node.
 ///
 /// A node hasher should domain-separate internal and leaf nodes in some specific way. The
-/// recommended approach for binary hashes is to set the MSB to 0 or 1 depending on the node kind.
+/// recommended approach for binary hashes is to set the two MSBs depending on the node kind.
 /// However, for other kinds of hashes (e.g. Poseidon2 or other algebraic hashes), other labeling
 /// schemes may be required.
 pub trait NodeHasher {
@@ -41,23 +41,25 @@ pub trait ValueHasher {
 ///
 /// If the MSB is true, it's a leaf. If the node is empty, it's a [`TERMINATOR`]. Otherwise, it's
 /// an internal node.
-pub fn node_kind_by_msb(node: &Node) -> NodeKind {
-    if node[0] >> 7 == 1 {
-        NodeKind::Leaf
-    } else if node == &TERMINATOR {
-        NodeKind::Terminator
-    } else {
-        NodeKind::Internal
+pub fn node_kind_by_msbs(node: &Node) -> NodeKind {
+    match node[0] >> 6 {
+        0b00 if node == &TERMINATOR => NodeKind::Terminator,
+        0b00 => NodeKind::Internal,
+        0b01 => NodeKind::Leaf,
+        0b10 => NodeKind::CollisionLeaf,
+        _ => unreachable!(),
     }
 }
 
-/// Set the most-significant bit of the node.
-pub fn set_msb(node: &mut Node) {
-    node[0] |= 0b10000000;
-}
-
-pub fn unset_msb(node: &mut Node) {
-    node[0] &= 0b01111111;
+/// Set the most-significant bits of the node.
+pub fn set_msbs_by_node_kind(node: &mut Node, kind: NodeKind) {
+    node[0] &= 0b00111111;
+    match kind {
+        NodeKind::Internal => (),
+        NodeKind::Leaf => node[0] |= 0b01000000,
+        NodeKind::CollisionLeaf => node[0] |= 0b10000000,
+        NodeKind::Terminator => unreachable!(),
+    }
 }
 
 /// A simple trait for representing binary hash functions.
@@ -102,24 +104,32 @@ impl<H: BinaryHash> ValueHasher for BinaryHasher<H> {
 impl<H: BinaryHash> NodeHasher for BinaryHasher<H> {
     fn hash_leaf(data: &LeafData) -> [u8; 32] {
         let mut h = H::hash2_concat(&data.key_path, &data.value_hash);
-        set_msb(&mut h);
+        if data.collision {
+            set_msbs_by_node_kind(&mut h, NodeKind::CollisionLeaf);
+        } else {
+            set_msbs_by_node_kind(&mut h, NodeKind::Leaf);
+        };
         h
     }
 
     fn hash_leaf_ref(data: &LeafDataRef) -> [u8; 32] {
         let mut h = H::hash2_concat(data.key_path, &data.value_hash);
-        set_msb(&mut h);
+        if data.collision {
+            set_msbs_by_node_kind(&mut h, NodeKind::CollisionLeaf);
+        } else {
+            set_msbs_by_node_kind(&mut h, NodeKind::Leaf);
+        };
         h
     }
 
     fn hash_internal(data: &InternalData) -> [u8; 32] {
         let mut h = H::hash2_32_concat(&data.left, &data.right);
-        unset_msb(&mut h);
+        set_msbs_by_node_kind(&mut h, NodeKind::Internal);
         h
     }
 
     fn node_kind(node: &Node) -> NodeKind {
-        node_kind_by_msb(node)
+        node_kind_by_msbs(node)
     }
 }
 
