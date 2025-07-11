@@ -23,6 +23,7 @@ fn prove_in_session() {
         let expected_leaf = LeafData {
             key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
+            collision: false,
         };
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)
@@ -63,6 +64,7 @@ fn prove_in_session_against_overlay() {
         let expected_leaf = LeafData {
             key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
+            collision: false,
         };
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)
@@ -117,6 +119,7 @@ fn prove_in_session_no_cache() {
         let expected_leaf = LeafData {
             key_path: k.clone(),
             value_hash: proof.terminal.as_leaf_option().unwrap().value_hash,
+            collision: false,
         };
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)

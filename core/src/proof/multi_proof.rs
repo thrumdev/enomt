@@ -1424,16 +1424,19 @@ mod tests {
         let leaf_0 = LeafData {
             key_path: key_path_0,
             value_hash: [0; 32],
+            collision: false,
         };
 
         let leaf_1 = LeafData {
             key_path: key_path_1,
             value_hash: [1; 32],
+            collision: false,
         };
 
         let leaf_2 = LeafData {
             key_path: key_path_2,
             value_hash: [2; 32],
+            collision: false,
         };
 
         // this is the
@@ -1485,14 +1488,17 @@ mod tests {
         let leaf_0 = LeafData {
             key_path: key_path_0.clone(),
             value_hash: [0; 32],
+            collision: false,
         };
         let leaf_1 = LeafData {
             key_path: key_path_1.clone(),
             value_hash: [1; 32],
+            collision: false,
         };
         let leaf_2 = LeafData {
             key_path: key_path_2.clone(),
             value_hash: [2; 32],
+            collision: false,
         };
 
         // this is the
@@ -1567,6 +1573,7 @@ mod tests {
             let leaf_data = LeafData {
                 key_path,
                 value_hash,
+                collision: false,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1699,6 +1706,7 @@ mod tests {
             let leaf_data = LeafData {
                 key_path,
                 value_hash,
+                collision: false,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1787,6 +1795,7 @@ mod tests {
             let leaf_data = LeafData {
                 key_path,
                 value_hash,
+                collision: false,
             };
 
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
@@ -1881,11 +1890,13 @@ mod tests {
         let leaf_prefix = LeafData {
             key_path: kp_prefix,
             value_hash: [1; 32],
+            collision: false,
         };
 
         let leaf_longer = LeafData {
             key_path: kp_longer,
             value_hash: [2; 32],
+            collision: false,
         };
 
         let node_prefix = Blake3Hasher::hash_leaf(&leaf_prefix);

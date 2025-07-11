@@ -46,6 +46,11 @@ pub fn is_leaf<H: NodeHasher>(hash: &Node) -> bool {
     H::node_kind(hash) == NodeKind::Leaf
 }
 
+/// Whether the node hash indicates the node is a collision leaf node.
+pub fn is_collision_leaf<H: NodeHasher>(hash: &Node) -> bool {
+    H::node_kind(hash) == NodeKind::CollisionLeaf
+}
+
 /// Whether the node hash indicates the node is an internal node.
 pub fn is_internal<H: NodeHasher>(hash: &Node) -> bool {
     H::node_kind(hash) == NodeKind::Internal
@@ -63,6 +68,10 @@ pub enum NodeKind {
     Terminator,
     /// A leaf node indicates a sub-trie with a single leaf.
     Leaf,
+    /// A leaf which indicates a sub-trie made from keys
+    /// that, when padded with zeroes, end up being the same, thus
+    /// their length becomes the differenciation factor.
+    CollisionLeaf,
     /// An internal node indicates at least two values.
     Internal,
 }
@@ -98,6 +107,8 @@ pub struct LeafData {
     pub key_path: KeyPath,
     /// The hash of the value carried in this leaf.
     pub value_hash: ValueHash,
+    /// Whether this leaf contains multiple collision values.
+    pub collision: bool,
 }
 
 /// The data of a leaf node containg a reference to the KepyPath.
@@ -109,4 +120,6 @@ pub struct LeafDataRef<'a> {
     pub key_path: &'a KeyPath,
     /// The hash of the value carried in this leaf.
     pub value_hash: ValueHash,
+    /// Whether this leaf contains multiple collision values.
+    pub collision: bool,
 }

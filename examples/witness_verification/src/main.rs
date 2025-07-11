@@ -39,6 +39,7 @@ fn main() -> Result<()> {
                     let leaf = LeafData {
                         key_path: read.key.clone(),
                         value_hash,
+                        collision: false,
                     };
                     assert!(verified.confirm_value(&leaf).unwrap());
                 }
