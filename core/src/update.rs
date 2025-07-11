@@ -121,7 +121,7 @@ impl<'a> WriteNode<'a> {
 // will be provided.
 pub fn build_trie<H: NodeHasher>(
     skip: usize,
-    ops: impl IntoIterator<Item = (KeyPath, ValueHash)>,
+    ops: impl IntoIterator<Item = (KeyPath, ValueHash, bool)>,
     mut visit: impl FnMut(WriteNode),
 ) -> Node {
     // we build a compact addressable sub-trie in-place based on the given set of ordered keys,
@@ -168,12 +168,12 @@ pub fn build_trie<H: NodeHasher>(
             visit(WriteNode::Terminator);
             return trie::TERMINATOR;
         }
-        (Some((k, v)), None) => {
+        (Some((k, v, collision)), None) => {
             // fast path: place single leaf.
             let leaf_data = trie::LeafDataRef {
                 key_path: &k,
                 value_hash: *v,
-                collision: false,
+                collision: *collision,
             };
             let leaf = H::hash_leaf_ref(&leaf_data);
             visit(WriteNode::Leaf {
@@ -188,18 +188,18 @@ pub fn build_trie<H: NodeHasher>(
         _ => {}
     }
 
-    while let Some((this_key, this_val)) = b {
+    while let Some((this_key, this_val, this_collision)) = b {
         let n1 = a
             .as_ref()
-            .map(|(k, _)| common_after_prefix(k, &this_key, skip));
+            .map(|(k, _, _)| common_after_prefix(k, &this_key, skip));
         let n2 = c
             .as_ref()
-            .map(|(k, _)| common_after_prefix(k, &this_key, skip));
+            .map(|(k, _, _)| common_after_prefix(k, &this_key, skip));
 
         let leaf_data = trie::LeafDataRef {
             key_path: &this_key,
             value_hash: this_val,
-            collision: false,
+            collision: this_collision,
         };
         let leaf = H::hash_leaf_ref(&leaf_data);
         let (leaf_depth, hash_up_layers) = match (n1, n2) {
@@ -273,7 +273,7 @@ pub fn build_trie<H: NodeHasher>(
         }
         pending_siblings.push((last_node, layer));
 
-        a = Some((this_key, this_val));
+        a = Some((this_key, this_val, this_collision));
         b = c;
         c = leaf_ops.next();
     }
@@ -398,10 +398,11 @@ mod tests {
         let mut visited = Visited::default();
 
         let (leaf, leaf_hash) = leaf(0xff);
-        let root =
-            build_trie::<DummyNodeHasher>(0, vec![(leaf.key_path, leaf.value_hash)], |control| {
-                visited.visit(control)
-            });
+        let root = build_trie::<DummyNodeHasher>(
+            0,
+            vec![(leaf.key_path, leaf.value_hash, false)],
+            |control| visited.visit(control),
+        );
 
         let visited = visited.visited;
 
@@ -420,7 +421,7 @@ mod tests {
 
         let ops = [leaf_a, leaf_b, leaf_c]
             .into_iter()
-            .map(|l| (l.key_path, l.value_hash))
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
             .collect::<Vec<_>>();
 
         let root = build_trie::<DummyNodeHasher>(4, ops, |control| visited.visit(control));
@@ -458,7 +459,7 @@ mod tests {
 
         let ops = [leaf_a, leaf_b, leaf_c, leaf_d, leaf_e]
             .into_iter()
-            .map(|l| (l.key_path, l.value_hash))
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
             .collect::<Vec<_>>();
 
         let root = build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));

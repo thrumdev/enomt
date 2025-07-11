@@ -154,6 +154,10 @@ impl SeekRequest {
                     self.continue_leaf_fetch::<H>(None);
                 }
                 return;
+            } else if trie::is_collision_leaf::<H>(&cur_node) {
+                // TODO: now seek is able to encounter some collision leaf which will need
+                // to be handled with its own logic
+                todo!()
             } else if trie::is_terminator::<H>(&cur_node) {
                 self.state = RequestState::Completed(None);
                 return;
@@ -911,7 +915,9 @@ pub struct Seek {
     /// The siblings along the path to the terminal, including the terminal's sibling.
     /// Empty if the seeker wasn't configured to record siblings.
     pub siblings: Vec<Node>,
+    // TODO will require probably something like collision siblings
     /// The terminal node encountered.
+    // TODO: this will be required to change in an enum TerminalEncoutered, LeafData or Container
     pub terminal: Option<trie::LeafData>,
     /// The number of I/Os loaded uniquely for this `Seek`.
     /// This does not include pages loaded from the cache, or pages which were already requested

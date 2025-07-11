@@ -42,6 +42,8 @@
 //! are recorded as part of the output. This is useful for splitting the work of updating pages
 //! across multiple threads.
 
+use std::ops::Range;
+
 use bitvec::prelude::*;
 use nomt_core::{
     hasher::NodeHasher,
@@ -344,14 +346,25 @@ impl<H: NodeHasher> PageWalker<H> {
 
         let start_position = self.position.clone();
 
-        let ops: Vec<_> = ops.into_iter().collect();
-        for window in ops.windows(2) {
-            let (k1, k2) = (&window[0].0, &window[1].0);
-            if k2.starts_with(k1) {
-                if k2[k1.len()..].iter().all(|p| *p == 0) {
-                    unimplemented!("FullPrefixKeys not handled yet");
-                }
-            }
+        // Extract collision ranges
+        let mut ops: Vec<_> = ops.into_iter().map(|(k, h)| (k, h, false)).collect();
+        let collision_ranges = extract_collision_ranges(&ops);
+
+        // Build collision subtree
+        for Range { start, end } in collision_ranges.into_iter().rev() {
+            // UNWRAP: start is a valid ops index.
+            let collision_subtree_key = ops.get(start).unwrap().0.clone();
+
+            let collision_ops = ops.drain(start..end).map(|(key, value_hash, _)| {
+                (key.len().to_be_bytes()[0..2].to_vec(), value_hash, false)
+            });
+
+            // TODO: the collision subtree will be used by seek later on thus it will need
+            // to be stored somewhere, probably within some special pages in the page_set.
+            let collision_subtree_root =
+                nomt_core::update::build_trie::<H>(0, collision_ops, |_control| {});
+
+            ops.insert(start, (collision_subtree_key, collision_subtree_root, true));
         }
 
         // replace sub-trie at the given position
@@ -987,7 +1000,7 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
             continue;
         }
 
-        if trie::is_leaf::<H>(&node) {
+        if trie::is_leaf::<H>(&node) || trie::is_collision_leaf::<H>(&node) {
             counter += 1;
         }
 
@@ -1003,6 +1016,40 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
         pos.sibling();
     }
     counter
+}
+
+fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Range<usize>> {
+    // extract collision ranges
+    let mut collision_keys_ranges = vec![];
+
+    let mut pending_range: Option<usize> = None;
+    for (idx, window) in ops.windows(2).enumerate() {
+        let (k1, k2) = (&window[0].0, &window[1].0);
+
+        let collides = k2.starts_with(k1) && k2[k1.len()..].iter().all(|p| *p == 0);
+
+        match (collides, &pending_range) {
+            // range did not started
+            (false, None) => (),
+            // range starts
+            (true, None) => {
+                pending_range.replace(idx);
+            }
+            // range already started
+            (true, Some(_)) => (),
+            // range finishes
+            (false, Some(start)) => {
+                collision_keys_ranges.push(*start..idx + 1);
+                pending_range = None;
+            }
+        }
+
+        if idx == ops.len() - 2 && collides {
+            let start = pending_range.take().unwrap();
+            collision_keys_ranges.push(start..ops.len());
+        }
+    }
+    collision_keys_ranges
 }
 
 /// Reconstruct the elided pages using all the key-value pairs present in the elided subtree.
@@ -1057,7 +1104,7 @@ mod tests {
     use bitvec::prelude::*;
     use imbl::HashMap;
     use nomt_core::page_id::{ChildPageIndex, PageId, PageIdsIterator};
-    use std::ops::Deref;
+    use std::ops::{Deref, Range};
 
     macro_rules! trie_pos {
         ($($t:tt)+) => {
@@ -1210,10 +1257,10 @@ mod tests {
                     nomt_core::update::build_trie::<Blake3Hasher>(
                         0,
                         vec![
-                            (key_path![0, 0, 1, 0], val(1)),
-                            (key_path![0, 0, 1, 1], val(2)),
-                            (key_path![1, 0], val(3)),
-                            (key_path![1, 1], val(4))
+                            (key_path![0, 0, 1, 0], val(1), false /*collision*/),
+                            (key_path![0, 0, 1, 1], val(2), false),
+                            (key_path![1, 0], val(3), false),
+                            (key_path![1, 1], val(4), false)
                         ],
                         |_| {}
                     )
@@ -1273,7 +1320,9 @@ mod tests {
                             (key_path![0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0], val(3)),
                             (key_path![0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1], val(4)),
                             (key_path![0, 1, 0, 1, 1, 1], val(2)),
-                        ],
+                        ]
+                        .into_iter()
+                        .map(|(k, v)| (k, v, false /*collision*/)),
                         |_| {}
                     )
                 );
@@ -1338,7 +1387,7 @@ mod tests {
                     new_root,
                     nomt_core::update::build_trie::<Blake3Hasher>(
                         0,
-                        vec![(leaf_a_key_path, val(1)),],
+                        vec![(leaf_a_key_path, val(1), false /*collision*/),],
                         |_| {}
                     )
                 );
@@ -1417,7 +1466,9 @@ mod tests {
                         vec![
                             (key_path![0, 0, 0, 0, 0, 0, 0], val(1)),
                             (key_path![0, 0, 0, 0, 0, 0, 1], val(2)),
-                        ],
+                        ]
+                        .into_iter()
+                        .map(|(k, v)| (k, v, false /*collision*/)),
                         |_| {}
                     )
                 );
@@ -1429,7 +1480,9 @@ mod tests {
                         vec![
                             (key_path![0, 0, 0, 0, 0, 1, 0], val(3)),
                             (key_path![0, 0, 0, 0, 0, 1, 1], val(4)),
-                        ],
+                        ]
+                        .into_iter()
+                        .map(|(k, v)| (k, v, false /*collision*/)),
                         |_| {}
                     )
                 );
@@ -2233,5 +2286,126 @@ mod tests {
                 page.into_inner().deref().deref()
             );
         }
+    }
+
+    #[test]
+    fn extract_collision_ranges() {
+        let ops = vec![
+            vec![0, 0],
+            vec![0, 0, 0],
+            vec![0, 1],
+            vec![0, 2, 3],
+            vec![0, 2, 3, 0],
+            vec![0, 2, 3, 0, 0],
+            vec![0, 2, 3, 0, 0, 0, 0, 0],
+            vec![0, 2, 3, 0, 0, 0, 0, 0, 0],
+            vec![0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            vec![1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![2],
+            vec![2, 0, 0, 0, 0, 0],
+            vec![6, 0, 0, 0, 0, 0],
+            vec![128, 0, 0, 0, 0, 0],
+            vec![128, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![128, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ]
+        .into_iter()
+        .map(|key| (key, [0; 32], false))
+        .collect();
+
+        let expected_collision_ranges: Vec<Range<usize>> = vec![0..2, 3..9, 11..13, 14..17];
+
+        let collision_ranges = super::extract_collision_ranges(&ops);
+
+        assert_eq!(expected_collision_ranges, collision_ranges);
+    }
+
+    #[test]
+    fn build_one_collision_subtree() {
+        let root = trie::TERMINATOR;
+        let mut page_set = MockPageSet::default();
+
+        // Build pages in the first two layers.
+        let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+        walker.set_inhibit_elision();
+
+        #[rustfmt::skip]
+        let ops = vec![
+            (vec![0b00100000], val(1),),
+            (vec![0b00110000], val(2),),
+            (vec![0b00110000, 0], val(3),),
+        ];
+
+        walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
+
+        let Output::Root(root, updates) = walker.conclude() else {
+            unreachable!();
+        };
+
+        page_set.apply(updates);
+
+        let (page, _) = page_set.get(&ROOT_PAGE_ID).unwrap();
+        let position = trie_pos![0, 0, 1, 1];
+
+        let is_collision =
+            trie::is_collision_leaf::<Blake3Hasher>(&page.node(position.node_index()));
+        assert!(is_collision);
+    }
+
+    #[test]
+    fn build_multiple_collision_subtree() {
+        let root = trie::TERMINATOR;
+        let mut page_set = MockPageSet::default();
+
+        // Build pages in the first two layers.
+        let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+        walker.set_inhibit_elision();
+
+        #[rustfmt::skip]
+        let ops = vec![
+            // leaf -> 001
+            (vec![0b00100000], val(1),),
+            // collision leaf -> 00110
+            (vec![0b00110000], val(2),),
+            (vec![0b00110000, 0], val(3),),
+            // leaf -> 00111
+            (vec![0b00111000], val(4),),
+            // collision leaf -> 100
+            (vec![0b10000000], val(5),),
+            (vec![0b10000000, 0], val(6),),
+            (vec![0b10000000, 0, 0], val(7),),
+            (vec![0b10000000, 0, 0, 0], val(8),),
+            // collision leaf -> 101
+            (vec![0b10100000], val(9),),
+            (vec![0b10100000, 0, 0, 0, 0,0,0, 0, 0,0], val(10),),
+            // leaf -> 110
+            (vec![0b11000000], val(11),),
+            // collision leaf -> 111
+            (vec![0b11100000], val(11),),
+            (vec![0b11100000, 0], val(12),),
+            (vec![0b11100000, 0, 0, 0, 0, 0], val(13),),
+        ];
+
+        walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
+
+        let Output::Root(_root, updates) = walker.conclude() else {
+            unreachable!();
+        };
+        let page = &updates[0].page;
+        let n_leaves = super::count_leaves::<Blake3Hasher>(page);
+        assert_eq!(n_leaves, 7);
+
+        assert!(trie::is_collision_leaf::<Blake3Hasher>(
+            &page.node(trie_pos![0, 0, 1, 1, 0].node_index())
+        ));
+        assert!(trie::is_collision_leaf::<Blake3Hasher>(
+            &page.node(trie_pos![1, 0, 0].node_index())
+        ));
+        assert!(trie::is_collision_leaf::<Blake3Hasher>(
+            &page.node(trie_pos![1, 0, 1].node_index())
+        ));
+        assert!(trie::is_collision_leaf::<Blake3Hasher>(
+            &page.node(trie_pos![1, 1, 1].node_index())
+        ));
     }
 }

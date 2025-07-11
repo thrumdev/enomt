@@ -896,7 +896,8 @@ fn hash_and_compact_terminal<H: NodeHasher>(
         skip // go to root
     };
 
-    let ops = crate::update::leaf_ops_spliced(leaf, &ops);
+    // TODO: Handle Collisions
+    let ops = crate::update::leaf_ops_spliced(leaf, &ops).map(|(k, v)| (k, v, false));
     let sub_root = crate::update::build_trie::<H>(skip, ops, |_| {});
 
     let mut cur_node = sub_root;
@@ -1394,7 +1395,9 @@ mod tests {
 
         let expected_root = build_trie::<Blake3Hasher>(
             0,
-            ops.clone().into_iter().map(|(k, v)| (k, v.unwrap())),
+            ops.clone()
+                .into_iter()
+                .map(|(k, v)| (k, v.unwrap(), false /*collision*/)),
             |_| {},
         );
 
@@ -1542,10 +1545,10 @@ mod tests {
         ];
 
         let final_state = vec![
-            (key_path_0, [2; 32]),
-            (key_path_4, [1; 32]),
-            (key_path_2, [2; 32]),
-            (key_path_3, [1; 32]),
+            (key_path_0, [2; 32], false /*collision*/),
+            (key_path_4, [1; 32], false),
+            (key_path_2, [2; 32], false),
+            (key_path_3, [1; 32], false),
         ];
 
         let expected_root = build_trie::<Blake3Hasher>(0, final_state, |_| {});
