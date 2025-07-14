@@ -627,3 +627,13 @@ fn get_in_memory_page(
                 .map(|(page, bucket)| (page, BucketInfo::Known(bucket)))
         })
 }
+
+// Check if two key collides and thus fall under the same collision subtree.
+fn collides(k1: &Vec<u8>, k2: &Vec<u8>) -> bool {
+    let (k_min, k_max) = if k1.len() < k2.len() {
+        (k1, k2)
+    } else {
+        (k2, k1)
+    };
+    k_max.starts_with(k_min) && k_max[k_min.len()..].iter().all(|b| *b == 0)
+}
