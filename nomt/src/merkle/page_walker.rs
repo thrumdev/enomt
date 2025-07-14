@@ -356,15 +356,20 @@ impl<H: NodeHasher> PageWalker<H> {
             let collision_subtree_key = ops.get(start).unwrap().0.clone();
 
             let collision_ops = ops.drain(start..end).map(|(key, value_hash, _)| {
-                (key.len().to_be_bytes()[0..2].to_vec(), value_hash, false)
+                (key.len().to_be_bytes()[6..8].to_vec(), value_hash, false)
             });
 
-            // TODO: the collision subtree will be used by seek later on thus it will need
-            // to be stored somewhere, probably within some special pages in the page_set.
             let collision_subtree_root =
                 nomt_core::update::build_trie::<H>(0, collision_ops, |_control| {});
 
-            ops.insert(start, (collision_subtree_key, collision_subtree_root, true));
+            ops.insert(
+                start,
+                (
+                    collision_subtree_key,
+                    collision_subtree_root,
+                    true, /*collision*/
+                ),
+            );
         }
 
         // replace sub-trie at the given position
@@ -1018,7 +1023,7 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
     counter
 }
 
-fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Range<usize>> {
+pub fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Range<usize>> {
     // extract collision ranges
     let mut collision_keys_ranges = vec![];
 

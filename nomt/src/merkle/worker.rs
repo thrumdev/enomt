@@ -246,6 +246,7 @@ fn update<H: HashAlgorithm>(
                 range_end,
                 prev_terminal,
             } => {
+                // TODO: propagate collision leaf
                 let ops = subtrie_ops(&shared.read_write[range_start..range_end]);
                 let ops = nomt_core::update::leaf_ops_spliced(prev_terminal, &ops);
                 root_page_updater.advance_and_replace(&page_set, trie_pos.clone(), ops.clone());
@@ -413,6 +414,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
             Some(ref ops) => {
                 // TODO: this function will need to be updated to not only handle
                 // prev|leaf|after but also prev|container_keys|after
+                // TODO: use collision_ops if collision leaf
                 let ops = nomt_core::update::leaf_ops_spliced(seek_result.terminal.clone(), &ops);
                 self.page_walker
                     .advance_and_replace(page_set, seek_result.position.clone(), ops)
