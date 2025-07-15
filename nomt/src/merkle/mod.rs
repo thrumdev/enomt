@@ -500,6 +500,7 @@ enum RootPagePending {
         range_start: usize,
         range_end: usize,
         prev_terminal: Option<trie::LeafData>,
+        prev_collision_ops: Option<Vec<(Vec<u8>, [u8; 32])>>,
     },
     Node(Node),
 }
@@ -543,6 +544,7 @@ impl UpdateShared {
         range_start: usize,
         range_end: usize,
         prev_terminal: Option<trie::LeafData>,
+        prev_collision_ops: Option<Vec<(Vec<u8>, [u8; 32])>>,
     ) {
         self.root_page_pending.lock().push((
             trie_pos,
@@ -550,6 +552,7 @@ impl UpdateShared {
                 range_start,
                 range_end,
                 prev_terminal,
+                prev_collision_ops,
             },
         ));
     }

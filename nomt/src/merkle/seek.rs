@@ -22,7 +22,7 @@ use super::{
 use nomt_core::{
     page::DEPTH,
     page_id::{PageId, ROOT_PAGE_ID},
-    trie::{self, KeyPath, LeafData, Node, ValueHash},
+    trie::{self, KeyPath, Node, ValueHash},
     trie_pos::TriePosition,
 };
 
@@ -217,21 +217,25 @@ impl SeekRequest {
 
     fn continue_seek_over_collision_subtree<H: HashAlgorithm>(
         &mut self,
-        collision_leaf: ValueHash,
         record_siblings: bool,
         collision_key_values: Vec<(Vec<u8>, [u8; 32])>,
     ) {
-        // UNWRAP: at least one key must be present.
-        let terminal_key_path = collision_key_values.first().unwrap().0.clone();
+        // PANIC: collision_key_values is not expected to be empty.
+        let (collision_leaf_key, collision_leaf_value_hash) = collision_key_values[0].clone();
+
+        let collides = collides(&collision_leaf_key, &self.key);
 
         self.collision_ops = Some(collision_key_values.clone());
-        self.state = RequestState::Completed(Some(LeafData {
-            key_path: terminal_key_path,
-            value_hash: collision_leaf,
+
+        self.state = RequestState::Completed(Some(trie::LeafData {
+            key_path: collision_leaf_key,
+            value_hash: collision_leaf_value_hash,
             collision: true,
         }));
 
-        if !record_siblings {
+        // If either the key does not collide or siblings are not required to be
+        // recorded, than return early.
+        if !collides || !record_siblings {
             return;
         }
 
@@ -453,14 +457,7 @@ impl SeekRequest {
 
         if *collision {
             let collision_key_values: Vec<(Vec<u8>, [u8; 32])> = ops.collect();
-            let collision_leaf = page.node(self.position.node_index());
-
-            self.continue_seek_over_collision_subtree::<H>(
-                collision_leaf,
-                *record_siblings,
-                collision_key_values,
-            );
-
+            self.continue_seek_over_collision_subtree::<H>(*record_siblings, collision_key_values);
             return;
         }
 
@@ -721,9 +718,9 @@ impl<H: HashAlgorithm> Seeker<H> {
 
             let _collision_siblings_index =
                 if let Some(collision_siblings) = request.collision_siblings {
-                    let _collision_siblings_index = request.siblings.len();
+                    let collision_siblings_index = request.siblings.len();
                     request.siblings.extend(collision_siblings);
-                    Some(_collision_siblings_index)
+                    Some(collision_siblings_index)
                 } else {
                     None
                 };
@@ -734,7 +731,7 @@ impl<H: HashAlgorithm> Seeker<H> {
                 page_id: request.page_id,
                 siblings: request.siblings,
                 _collision_siblings_index,
-                _collision_ops: request.collision_ops,
+                collision_ops: request.collision_ops,
                 ios: request.ios,
                 terminal,
             });
@@ -1059,10 +1056,10 @@ pub struct Seek {
     /// Index within `siblings` field after which only siblings which are part of the
     /// collision subtree are collected.
     pub _collision_siblings_index: Option<usize>,
+    /// Store all the operations that collide with this Seek.
+    pub collision_ops: Option<Vec<(Vec<u8>, [u8; 32])>>,
     /// The terminal node encountered.
     pub terminal: Option<trie::LeafData>,
-    /// The key-value pairs which collide with this Seek.
-    pub _collision_ops: Option<Vec<(KeyPath, ValueHash)>>,
     /// The number of I/Os loaded uniquely for this `Seek`.
     /// This does not include pages loaded from the cache, or pages which were already requested
     /// for another seek.
