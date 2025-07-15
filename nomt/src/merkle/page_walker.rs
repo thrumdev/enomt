@@ -356,7 +356,16 @@ impl<H: NodeHasher> PageWalker<H> {
             let collision_subtree_key = ops.get(start).unwrap().0.clone();
 
             let collision_ops = ops.drain(start..end).map(|(key, value_hash, _)| {
-                (key.len().to_be_bytes()[6..8].to_vec(), value_hash, false)
+                let leaf = trie::LeafData {
+                    key_path: key.clone(),
+                    value_hash,
+                    collision: false,
+                };
+                (
+                    key.len().to_be_bytes()[6..8].to_vec(),
+                    H::hash_leaf(&leaf),
+                    false,
+                )
             });
 
             let collision_subtree_root =
@@ -700,17 +709,17 @@ impl<H: NodeHasher> PageWalker<H> {
                 // compact terminators.
                 trie::TERMINATOR
             }
-            (NodeKind::Leaf, NodeKind::Terminator) => {
+            (NodeKind::Leaf, NodeKind::Terminator)
+            | (NodeKind::CollisionLeaf, NodeKind::Terminator) => {
                 // compact: clear this node, move leaf up.
                 self.set_node(trie::TERMINATOR);
-
                 node
             }
-            (NodeKind::Terminator, NodeKind::Leaf) => {
+            (NodeKind::Terminator, NodeKind::Leaf)
+            | (NodeKind::Terminator, NodeKind::CollisionLeaf) => {
                 // compact: clear sibling node, move leaf up.
                 self.position.sibling();
                 self.set_node(trie::TERMINATOR);
-
                 sibling
             }
             _ => {
@@ -1024,7 +1033,6 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
 }
 
 pub fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Range<usize>> {
-    // extract collision ranges
     let mut collision_keys_ranges = vec![];
 
     let mut pending_range: Option<usize> = None;
@@ -2343,7 +2351,7 @@ mod tests {
 
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
 
-        let Output::Root(root, updates) = walker.conclude() else {
+        let Output::Root(_, updates) = walker.conclude() else {
             unreachable!();
         };
 
@@ -2360,7 +2368,7 @@ mod tests {
     #[test]
     fn build_multiple_collision_subtree() {
         let root = trie::TERMINATOR;
-        let mut page_set = MockPageSet::default();
+        let page_set = MockPageSet::default();
 
         // Build pages in the first two layers.
         let mut walker = PageWalker::<Blake3Hasher>::new(root, None);

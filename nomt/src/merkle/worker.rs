@@ -245,10 +245,11 @@ fn update<H: HashAlgorithm>(
                 range_start,
                 range_end,
                 prev_terminal,
+                prev_collision_ops,
             } => {
-                // TODO: propagate collision leaf
                 let ops = subtrie_ops(&shared.read_write[range_start..range_end]);
-                let ops = nomt_core::update::leaf_ops_spliced(prev_terminal, &ops);
+                let ops =
+                    nomt_core::update::leaf_ops_spliced(prev_terminal, prev_collision_ops, &ops);
                 root_page_updater.advance_and_replace(&page_set, trie_pos.clone(), ops.clone());
             }
         }
@@ -365,6 +366,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                 start_index,
                 next_index,
                 seek_result.terminal.clone(),
+                seek_result.collision_ops,
             );
 
             if let Some(ref mut witnessed_paths) = output.witnessed_paths {
@@ -405,17 +407,18 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
         &mut self,
         output: &mut WorkerOutput,
         page_set: &PageSet,
-        seek_result: Seek,
+        mut seek_result: Seek,
         ops: Option<Vec<(KeyPath, Option<ValueHash>)>>,
         batch_size: usize,
     ) {
         match ops {
             None => self.page_walker.advance(seek_result.position.clone()),
             Some(ref ops) => {
-                // TODO: this function will need to be updated to not only handle
-                // prev|leaf|after but also prev|container_keys|after
-                // TODO: use collision_ops if collision leaf
-                let ops = nomt_core::update::leaf_ops_spliced(seek_result.terminal.clone(), &ops);
+                let ops = nomt_core::update::leaf_ops_spliced(
+                    seek_result.terminal.clone(),
+                    seek_result.collision_ops.take(),
+                    ops,
+                );
                 self.page_walker
                     .advance_and_replace(page_set, seek_result.position.clone(), ops)
             }

@@ -41,28 +41,81 @@ fn common_after_prefix(k1: &KeyPath, k2: &KeyPath, skip: usize) -> usize {
     shared_bits
 }
 
-/// Creates an iterator of all provided operations, with the leaf value spliced in if its key
-/// does not appear in the original ops list. Then filters out all `None`s.
+/// Creates an iterator of all provided operations, with the leaf value and possibly
+/// the collision ops spliced in if their keys do not appear in the original ops list.
+/// Filters out all `None`s.
 pub fn leaf_ops_spliced(
     leaf: Option<LeafData>,
+    collision_leaf_ops: Option<Vec<(KeyPath, ValueHash)>>,
     ops: &[(KeyPath, Option<ValueHash>)],
 ) -> impl Iterator<Item = (KeyPath, ValueHash)> + Clone + '_ {
+    // The leaf and the collision ops could be left unchanged, modified, or deleted
+    // within ops. What we want to achieve is: prev_ops | leaf / collision_ops | after_ops
     let splice_index = leaf
         .as_ref()
         .and_then(|leaf| ops.binary_search_by_key(&&leaf.key_path, |x| &x.0).err());
-    let preserve_value = splice_index
-        .zip(leaf)
-        .map(|(_, leaf)| (leaf.key_path, Some(leaf.value_hash)));
+    let leaf_in_ops = splice_index.is_none();
     let splice_index = splice_index.unwrap_or(0);
 
-    // splice: before / item / after
-    // skip deleted.
-    ops[..splice_index]
-        .into_iter()
-        .cloned()
-        .chain(preserve_value)
-        .chain(ops[splice_index..].into_iter().cloned())
-        .filter_map(|(k, o)| o.map(move |value| (k, value)))
+    let mut final_ops = Vec::with_capacity(ops.len());
+
+    // pref_ops
+    final_ops.extend(
+        ops[..splice_index]
+            .iter()
+            .filter_map(|(k, o)| o.map(move |value| (k.clone(), value))),
+    );
+
+    let mut ops_iter = ops[splice_index..].iter().cloned().peekable();
+
+    // leaf / collision_ops
+    if let Some(collision_ops) = collision_leaf_ops {
+        let mut collision_ops_iter = collision_ops.into_iter().peekable();
+
+        while let (Some((collision_key, _)), Some((key, value))) =
+            (collision_ops_iter.peek(), ops_iter.peek())
+        {
+            // UNWRAPs: Each unwrap is called after a peek or after
+            // ensuring that the value is Some.
+            match collision_key.cmp(key) {
+                // A collision item is being modified by ops.
+                core::cmp::Ordering::Equal if value.is_some() => {
+                    let item = ops_iter.next().map(|(k, v)| (k, v.unwrap())).unwrap();
+                    collision_ops_iter.next();
+                    final_ops.push(item);
+                }
+                // A collision item is being deleted by ops.
+                core::cmp::Ordering::Equal => {
+                    ops_iter.next();
+                    collision_ops_iter.next();
+                }
+                // A new collision item is being added.
+                core::cmp::Ordering::Greater => {
+                    let item = ops_iter.next().map(|(k, v)| (k, v.unwrap())).unwrap();
+                    final_ops.push(item);
+                }
+                // Collision operation is smaller, so save it and skip to the next.
+                core::cmp::Ordering::Less => {
+                    let item = collision_ops_iter.next().unwrap();
+                    final_ops.push(item);
+                }
+            }
+        }
+
+        // Store all remaining collision ops.
+        final_ops.extend(collision_ops_iter);
+    } else if leaf.is_some() && !leaf_in_ops {
+        // UNWRAP: leaf has just been checked to be Some.
+        final_ops.push(
+            leaf.as_ref()
+                .map(|l| (l.key_path.clone(), l.value_hash))
+                .unwrap(),
+        );
+    }
+
+    // after_ops
+    final_ops.extend(ops_iter.filter_map(|(k, o)| o.map(move |value| (k.clone(), value))));
+    final_ops.into_iter()
 }
 
 pub enum WriteNode<'a> {
