@@ -34,7 +34,7 @@ const MAX_CRASH_DELAY: Duration = TOLERANCE.checked_sub(Duration::from_secs(1)).
 struct Snapshot {
     sync_seqn: u32,
     /// The state of the database at this snapshot.
-    state: OrdMap<[u8; 32], Option<Vec<u8>>>,
+    state: OrdMap<Key, Option<Vec<u8>>>,
 }
 
 impl Snapshot {
@@ -647,12 +647,12 @@ impl Workload {
         for change in changeset {
             match change {
                 KeyValueChange::Insert(key, value)
-                    if self.rr().send_request_query(*key).await?.as_ref() != Some(&value) =>
+                    if self.rr().send_request_query(key.clone()).await?.as_ref() != Some(&value) =>
                 {
                     return Err(anyhow::anyhow!("Inserted item not present after commit"));
                 }
                 KeyValueChange::Delete(key)
-                    if self.rr().send_request_query(*key).await?.is_some() =>
+                    if self.rr().send_request_query(key.clone()).await?.is_some() =>
                 {
                     return Err(anyhow::anyhow!("Deleted item still present after commit"));
                 }
@@ -676,7 +676,7 @@ impl Workload {
             match change {
                 KeyValueChange::Insert(key, _value) => {
                     // The current value must be equal to the previous one.
-                    let current_value = self.rr().send_request_query(*key).await?;
+                    let current_value = self.rr().send_request_query(key.clone()).await?;
                     match self.committed.state.get(key) {
                         None | Some(None) if current_value.is_some() => {
                             return Err(anyhow::anyhow!("New inserted item should not be present"));
@@ -693,7 +693,7 @@ impl Workload {
                     // UNWRAP: Non existing keys are not deleted.
                     let prev_value = self.committed.state.get(key).unwrap();
                     assert!(prev_value.is_some());
-                    if self.rr().send_request_query(*key).await?.as_ref() != prev_value.as_ref() {
+                    if self.rr().send_request_query(key.clone()).await?.as_ref() != prev_value.as_ref() {
                         return Err(anyhow::anyhow!(
                             "Deleted item should be reverted to previous state"
                         ));
@@ -728,7 +728,7 @@ impl Workload {
 
     async fn check_entire_snapshot(&self) -> anyhow::Result<()> {
         for (i, (key, expected_value)) in (self.committed.state.iter()).enumerate() {
-            let value = self.rr().send_request_query(*key).await?;
+            let value = self.rr().send_request_query(key.clone()).await?;
             if &value != expected_value {
                 return Err(anyhow::anyhow!(
                     "Wrong {}ith key in snapshot,\n key: {:?},\n expected value: {:?},\n found value: {:?}",
@@ -743,11 +743,12 @@ impl Workload {
     }
 
     async fn check_sampled_snapshot(&mut self) -> anyhow::Result<()> {
-        let mut key = [0; 32];
         // The amount of items randomly sampled is equal to 5% of the entire state size.
         let sample_check_size = (self.committed.state.len() as f64 * 0.05) as usize;
         for _ in 0..sample_check_size {
             let (key, expected_value) = loop {
+                let key_len = self.rng.gen_range(1..1024);
+                let mut key = vec![0; key_len];
                 self.rng.fill_bytes(&mut key);
                 if let Some((next_key, Some(expected_value))) = self.committed.state.get_next(&key)
                 {
@@ -755,7 +756,7 @@ impl Workload {
                 }
             };
 
-            let value = self.rr().send_request_query(*key).await?;
+            let value = self.rr().send_request_query(key.clone()).await?;
             if value.as_ref().map_or(true, |v| v != expected_value) {
                 return Err(anyhow::anyhow!(
                     "Wrong key in snapshot,\n key: {:?},\n expected value: {:?},\n found value: {:?}",
@@ -891,7 +892,7 @@ impl Workload {
         let mut used_keys = HashSet::with_capacity(changeset_size);
         let mut new_keys = HashSet::with_capacity(changeset_size);
         let mut sum_value_size = 0;
-        let mut tot_items = 0;
+        let mut keys_size = 0;
         loop {
             let Some(change) = self.gen_key_value_change(&mut used_keys, &mut new_keys) else {
                 // Stop adding things to the changeset if `gen_key_value_change`
@@ -902,14 +903,14 @@ impl Workload {
             if let Some(val) = change.value() {
                 sum_value_size += val.len();
             }
-            tot_items += 1;
+            keys_size += change.key().len();
 
             // Stop adding changes to the commit if we exceed 90% of MAX_ENVELOPE_SIZE.
-            if (sum_value_size + tot_items * 32) as f64 / MAX_ENVELOPE_SIZE as f64 > 0.9 {
+            if (sum_value_size + keys_size) as f64 / MAX_ENVELOPE_SIZE as f64 > 0.8 {
                 break;
             }
 
-            snapshot.state.insert(*change.key(), change.value());
+            snapshot.state.insert(change.key().clone(), change.value());
             changes.push(change);
 
             if used_keys.len() + new_keys.len() >= changeset_size {
@@ -924,16 +925,17 @@ impl Workload {
 
     fn gen_reads(&mut self, size: usize) -> Vec<Key> {
         let mut reads = vec![];
-        let mut key = [0; 32];
 
         // `threshold` after which we stop trying to read existing keys
         // because there is a high chance that all have already been read.
         let threshold = self.committed.state.len();
         while reads.len() < size {
+            let key_len = self.rng.gen_range(1..1024);
+            let mut key = vec![0; key_len];
             self.rng.fill_bytes(&mut key);
             if reads.len() < threshold && self.rng.gen_bool(self.config.read_existing_key) {
                 if let Some((next_key, Some(_))) = self.committed.state.get_next(&key) {
-                    key.copy_from_slice(next_key);
+                    key = next_key.clone();
                 }
             }
             reads.push(key.clone());
@@ -946,13 +948,14 @@ impl Workload {
     /// otherwise returns a KeyValueChange with a new key, a deleted or a modified one.
     fn gen_key_value_change(
         &mut self,
-        used_keys: &mut HashSet<[u8; 32]>,
-        new_keys: &mut HashSet<[u8; 32]>,
+        used_keys: &mut HashSet<Vec<u8>>,
+        new_keys: &mut HashSet<Vec<u8>>,
     ) -> Option<KeyValueChange> {
         let used_keys_len = used_keys.len();
 
         let mut find_new_key = |rng: &mut rand_pcg::Pcg64| -> Key {
-            let mut key = [0; 32];
+            let key_len = rng.gen_range(1..1024);
+            let mut key = vec![0; key_len];
             loop {
                 rng.fill_bytes(&mut key);
                 if !self.committed.state.contains_key(&key) && new_keys.insert(key.clone()) {
@@ -963,9 +966,11 @@ impl Workload {
 
         // Returns None if all present keys are already used.
         let mut find_existing_key = |rng: &mut rand_pcg::Pcg64| -> Option<Key> {
-            let mut key = [0; 32];
+            let key_len = rng.gen_range(1..1024);
+            let mut key = vec![0; key_len];
             rng.fill_bytes(&mut key);
-            let start_key = key;
+
+            let start_key = key.clone();
             let mut restart = false;
             // Starting from a random key, perform a circular linear search looking
             // for an unused key to delete. This is never called if the committed state is empty,
@@ -978,37 +983,36 @@ impl Workload {
                 let next_key = match self.committed.state.get_next(&key) {
                     Some((next_key, Some(_))) => next_key,
                     Some((next_key, None)) => {
-                        key.copy_from_slice(next_key);
-                        let increased_key = ruint::Uint::<256, 4>::from_be_bytes(key)
+                        let increased_key = ruint::Uint::<8192, 128>::from_be_slice(&next_key)
                             .checked_add(ruint::Uint::from(1));
                         match increased_key {
-                            Some(increased_key) => key = increased_key.to_be_bytes(),
+                            Some(increased_key) => key = increased_key.to_be_bytes_trimmed_vec(),
                             None => {
                                 restart = true;
-                                key = [0; 32];
+                                key = vec![0];
                             }
                         }
                         continue;
                     }
                     None => {
-                        key = [0; 32];
+                        key = vec![0];
                         restart = true;
                         continue;
                     }
                 };
 
-                if used_keys.insert(*next_key) {
-                    break Some(*next_key);
+                if used_keys.insert(next_key.clone()) {
+                    break Some(next_key.clone());
                 }
 
-                key.copy_from_slice(next_key);
-                let increased_key =
-                    ruint::Uint::<256, 4>::from_be_bytes(key).checked_add(ruint::Uint::from(1));
+                let increased_key = ruint::Uint::<8192, 128>::from_be_slice(next_key)
+                        .checked_add(ruint::Uint::from(1));
+
                 match increased_key {
-                    Some(increased_key) => key = increased_key.to_be_bytes(),
+                    Some(increased_key) => key = increased_key.to_be_bytes_trimmed_vec(),
                     None => {
                         restart = true;
-                        key = [0; 32];
+                        key = vec![0];
                     }
                 }
             }
