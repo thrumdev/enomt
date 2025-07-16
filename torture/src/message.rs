@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub type Key = [u8; 32];
+pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
 /// A change in the key-value store.
