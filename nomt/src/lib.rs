@@ -12,7 +12,7 @@ use nomt_core::{
     hasher::{NodeHasher, ValueHasher},
     page_id::ROOT_PAGE_ID,
     proof::PathProof,
-    trie::{InternalData, KeyPath, LeafData, Node, TERMINATOR},
+    trie::{InternalData, KeyPath, LeafData, Node, ValueHash, TERMINATOR},
 };
 use overlay::{LiveOverlay, OverlayMarker};
 use page_cache::PageCache;
@@ -886,14 +886,16 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
     // 3 cases.
     // 1: root page is empty and beatree is empty. in this case, root is the TERMINATOR.
     // 2: root page is empty and beatree has a single item. in this case, root is a leaf.
-    // 3: root is an internal node.
+    // 3: root page is empty and beatree only has items that collide
+    //    in this case, root is a collision leaf.
+    // 4: root is an internal node.
 
     if let Some((root_page, _)) = page_cache.get(ROOT_PAGE_ID) {
         let left = root_page.node(0);
         let right = root_page.node(1);
 
         if left != TERMINATOR || right != TERMINATOR {
-            // case 3
+            // case 4
             return H::hash_internal(&InternalData { left, right });
         }
     }
@@ -904,9 +906,40 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
 
     let io_handle = store.io_pool().make_handle();
 
+    let mut next_iterator_item = iterator.next();
+    let mut leaf_data = None;
+    let mut collision_ops: Option<Vec<(KeyPath, ValueHash)>> = None;
+
     loop {
-        match iterator.next() {
-            None => return TERMINATOR, // case 1
+        match next_iterator_item {
+            None if collision_ops.is_none() => return TERMINATOR, // case 1
+            // case 3
+            None => {
+                // UNWRAP: collision_ops has just been checked to be Some.
+                let collision_ops = collision_ops.take().unwrap();
+                let key_path = collision_ops[0].0.clone();
+
+                let collision_ops = collision_ops.into_iter().map(|(key, value_hash)| {
+                    (
+                        key.len().to_be_bytes()[6..8].to_vec(),
+                        H::hash_leaf(&trie::LeafData {
+                            key_path: key,
+                            value_hash,
+                            collision: false,
+                        }),
+                        false,
+                    )
+                });
+
+                let collision_subtree_root =
+                    nomt_core::update::build_trie::<H>(0, collision_ops, |_control| {});
+
+                return H::hash_leaf(&LeafData {
+                    key_path,
+                    value_hash: collision_subtree_root,
+                    collision: true,
+                });
+            }
             Some(beatree::iterator::IterOutput::Blocked) => {
                 // UNWRAP: when blocked, needed leaf always exists.
                 let leaf = match read_tx.load_leaf_async(
@@ -927,24 +960,38 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
                 iterator.provide_leaf(leaf);
             }
             Some(beatree::iterator::IterOutput::Item(key_path, value)) => {
-                // case 2
-                return H::hash_leaf(&LeafData {
-                    key_path,
-                    value_hash: H::hash_value(value),
-                    // TODO: Make sure this is correctly handled.
-                    collision: false,
-                });
+                leaf_data = Some((key_path, H::hash_value(value)));
             }
             Some(beatree::iterator::IterOutput::OverflowItem(key_path, value_hash, _)) => {
-                // case 2
-                return H::hash_leaf(&LeafData {
-                    key_path,
-                    value_hash,
-                    // TODO: Make sure this is correctly handled.
-                    collision: false,
-                });
+                leaf_data = Some((key_path, value_hash));
             }
         }
+
+        next_iterator_item = iterator.next();
+
+        let Some((key_path, value_hash)) = leaf_data.take() else {
+            // Continue if no leaf data has been collected.
+            continue;
+        };
+
+        // Collect collision ops until iterator finishes.
+        if let Some(ref mut collision_ops) = collision_ops {
+            collision_ops.push((key_path, value_hash));
+            continue;
+        }
+
+        // Start collecting collision operations if there is more than one element in the iterator
+        if next_iterator_item.is_some() {
+            collision_ops = Some(vec![(key_path, value_hash)]);
+            continue;
+        }
+
+        // There is only one element in the iterator, case 2
+        return H::hash_leaf(&LeafData {
+            key_path,
+            value_hash,
+            collision: false,
+        });
     }
 }
 

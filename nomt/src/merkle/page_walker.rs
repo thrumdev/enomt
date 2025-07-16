@@ -55,7 +55,7 @@ use nomt_core::{
 };
 
 use crate::{
-    merkle::{page_set::PageOrigin, BucketInfo, ElidedChildren, PAGE_ELISION_THRESHOLD},
+    merkle::{collides, page_set::PageOrigin, BucketInfo, ElidedChildren, PAGE_ELISION_THRESHOLD},
     page_cache::{Page, PageMut},
     page_diff::PageDiff,
 };
@@ -1039,7 +1039,7 @@ pub fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Ran
     for (idx, window) in ops.windows(2).enumerate() {
         let (k1, k2) = (&window[0].0, &window[1].0);
 
-        let collides = k2.starts_with(k1) && k2[k1.len()..].iter().all(|p| *p == 0);
+        let collides = collides(k1, k2);
 
         match (collides, &pending_range) {
             // range did not started
