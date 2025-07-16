@@ -45,3 +45,27 @@ fn root_on_internal() {
         NodeKind::Internal
     );
 }
+
+#[test]
+fn root_on_collision_leaf() {
+    {
+        let mut t = Test::new("compute_root_collision_leaf");
+        t.write(vec![123, 123, 123, 123, 123, 123], Some(vec![1]));
+        t.write(
+            vec![123, 123, 123, 123, 123, 123, 0, 0, 0],
+            Some(vec![1, 2]),
+        );
+        t.write(
+            vec![123, 123, 123, 123, 123, 123, 0, 0, 0, 0, 0, 0],
+            Some(vec![1, 2, 3]),
+        );
+        t.commit();
+    }
+
+    let t = Test::new_with_params("compute_root_collision_leaf", 1, 1, None, false);
+    let root = t.root();
+    assert_eq!(
+        NodeKind::of::<Blake3Hasher>(&root.into_inner()),
+        NodeKind::CollisionLeaf
+    );
+}

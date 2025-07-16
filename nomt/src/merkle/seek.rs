@@ -53,14 +53,18 @@ impl SeekRequest {
         overlay: &LiveOverlay,
         key: KeyPath,
         root: Node,
+        record_siblings: bool,
     ) -> SeekRequest {
         let state = if trie::is_terminator::<H>(&root) {
             RequestState::Completed(None)
         } else if trie::is_leaf::<H>(&root) {
             RequestState::begin_leaf_fetch::<H>(read_transaction, overlay, &TriePosition::new())
         } else if trie::is_collision_leaf::<H>(&root) {
-            // TODO: special case of the root being a collision leaf.
-            unimplemented!()
+            RequestState::begin_collision_leaves_fetch::<H>(
+                read_transaction,
+                &TriePosition::new(),
+                record_siblings,
+            )
         } else {
             RequestState::Seeking
         };
@@ -77,10 +81,15 @@ impl SeekRequest {
         };
 
         // The iterator must be advanced until it is blocked.
-        if let RequestState::FetchingLeaf { .. } = request.state {
-            request.continue_leaf_fetch::<H>(None)
-        };
-
+        match request.state {
+            RequestState::FetchingLeaf { .. } => request.continue_leaf_fetch::<H>(None),
+            RequestState::FetchingLeaves {
+                collision: true, ..
+            } => {
+                request.continue_leaves_fetch::<H>(None, overlay, None);
+            }
+            _ => (),
+        }
         request
     }
 
@@ -163,14 +172,12 @@ impl SeekRequest {
                 }
                 return;
             } else if trie::is_collision_leaf::<H>(&cur_node) {
-                self.state = RequestState::begin_leaves_fetch::<H>(
+                self.state = RequestState::begin_collision_leaves_fetch::<H>(
                     read_transaction,
                     &self.position,
-                    page.clone(),
-                    true, /*collision*/
                     record_siblings,
                 );
-                self.continue_leaves_fetch::<H>(page_set, overlay, None);
+                self.continue_leaves_fetch::<H>(None, overlay, None);
                 return;
             } else if trie::is_terminator::<H>(&cur_node) {
                 self.state = RequestState::Completed(None);
@@ -204,14 +211,12 @@ impl SeekRequest {
             // beatree leaves, and the requests will be woken one after the other when a needed leaf is received.
             // This is less consuming than the overhead introduced by making the second SeekRequest depend
             // on the first one or sharing some data between them.
-            self.state = RequestState::begin_leaves_fetch::<H>(
+            self.state = RequestState::begin_page_elision_leaves_fetch::<H>(
                 read_transaction,
                 &self.position,
                 page.clone(),
-                false, /*collision*/
-                record_siblings,
             );
-            self.continue_leaves_fetch::<H>(page_set, overlay, None);
+            self.continue_leaves_fetch::<H>(Some(page_set), overlay, None);
         }
     }
 
@@ -342,7 +347,7 @@ impl SeekRequest {
 
     fn continue_leaves_fetch<H: HashAlgorithm>(
         &mut self,
-        page_set: &mut PageSet,
+        page_set: Option<&mut PageSet>,
         overlay: &LiveOverlay,
         leaf: Option<LeafNodeRef>,
     ) {
@@ -461,6 +466,9 @@ impl SeekRequest {
             return;
         }
 
+        // UNWRAP: page and page_set are exepcted to be some to continue the page elision
+        // leaves fetch.
+        let (page, page_set) = (page.as_ref().unwrap(), page_set.unwrap());
         // UNWRAP: The `page_id` from where the leaves request started must be `Some`.
         let maybe_pages = super::page_walker::reconstruct_pages::<H>(
             page,
@@ -499,7 +507,7 @@ enum RequestState {
     // Fetching multiple leaves to construct elided pages
     // or a collision subtree.
     FetchingLeaves {
-        page: Page,
+        page: Option<Page>,
         range: (KeyPath, Option<KeyPath>),
         beatree_iterator: BeatreeIterator,
         needed_leaves: NeededLeavesIter,
@@ -548,11 +556,29 @@ impl RequestState {
         }
     }
 
-    fn begin_leaves_fetch<H: HashAlgorithm>(
+    fn begin_page_elision_leaves_fetch<H: HashAlgorithm>(
         read_transaction: &BeatreeReadTx,
         pos: &TriePosition,
         page: Page,
-        collision: bool,
+    ) -> Self {
+        let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
+
+        let beatree_iterator = read_transaction.iterator(start.clone(), end.clone());
+        let needed_leaves = beatree_iterator.needed_leaves();
+        RequestState::FetchingLeaves {
+            page: Some(page),
+            range: (start, end),
+            beatree_iterator,
+            needed_leaves,
+            collected_leaf_data: Vec::with_capacity(PAGE_ELISION_THRESHOLD as usize),
+            collision: false,
+            record_siblings: false,
+        }
+    }
+
+    fn begin_collision_leaves_fetch<H: HashAlgorithm>(
+        read_transaction: &BeatreeReadTx,
+        pos: &TriePosition,
         record_siblings: bool,
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
@@ -560,12 +586,12 @@ impl RequestState {
         let beatree_iterator = read_transaction.iterator(start.clone(), end.clone());
         let needed_leaves = beatree_iterator.needed_leaves();
         RequestState::FetchingLeaves {
-            page,
+            page: None,
             range: (start, end),
             beatree_iterator,
             needed_leaves,
             collected_leaf_data: Vec::with_capacity(PAGE_ELISION_THRESHOLD as usize),
-            collision,
+            collision: true,
             record_siblings,
         }
     }
@@ -767,6 +793,7 @@ impl<H: HashAlgorithm> Seeker<H> {
             &self.overlay,
             key,
             self.root,
+            self.record_siblings,
         ));
         self.idle_requests.push_back(request_index);
     }
@@ -892,7 +919,7 @@ impl<H: HashAlgorithm> Seeker<H> {
                                 }
                                 RequestState::FetchingLeaves { .. } => request
                                     .continue_leaves_fetch::<H>(
-                                        page_set,
+                                        Some(page_set),
                                         &self.overlay,
                                         Some(leaf),
                                     ),
@@ -1026,7 +1053,11 @@ impl<H: HashAlgorithm> Seeker<H> {
                     request.continue_leaf_fetch::<H>(Some(leaf.clone()));
                 }
                 RequestState::FetchingLeaves { .. } => {
-                    request.continue_leaves_fetch::<H>(page_set, &self.overlay, Some(leaf.clone()));
+                    request.continue_leaves_fetch::<H>(
+                        Some(page_set),
+                        &self.overlay,
+                        Some(leaf.clone()),
+                    );
                 }
                 // PANIC: This is strictly called only when `IoRequest::Leaf` is received, thus
                 // no `RequestState::Seeking` is expected.
