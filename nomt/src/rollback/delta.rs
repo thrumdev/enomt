@@ -53,12 +53,14 @@ impl Delta {
         let mut buf = Vec::with_capacity(4 + 32 * to_erase.len());
         buf.extend_from_slice(&to_erase_len.to_le_bytes());
         for key in to_erase {
+            buf.extend_from_slice(&(key.len() as u16).to_le_bytes()[..]);
             buf.extend_from_slice(&key[..]);
         }
 
         let to_reinstate_len = to_reinstate.len() as u32;
         buf.extend_from_slice(&to_reinstate_len.to_le_bytes());
         for (key, value) in to_reinstate {
+            buf.extend_from_slice(&(key.len() as u16).to_le_bytes()[..]);
             buf.extend_from_slice(&key[..]);
             let value_len = value.len() as u32;
             buf.extend_from_slice(&value_len.to_le_bytes());
@@ -78,9 +80,10 @@ impl Delta {
         let to_erase_len = u32::from_le_bytes(buf);
         // Read the keys to erase.
         for _ in 0..to_erase_len {
-            // TODO: used keys are still [0; 32] but soon it will be updated
-            // the encoding format will change
-            let mut key_path = [0; 32];
+            let mut key_len = [0u8; 2];
+            reader.read_exact(&mut key_len)?;
+            let key_len = u16::from_le_bytes(key_len);
+            let mut key_path = vec![0; dbg!(key_len) as usize];
             reader.read_exact(&mut key_path)?;
             let preemted = priors.insert(key_path.to_vec(), None).is_some();
             if preemted {
@@ -94,9 +97,10 @@ impl Delta {
         // Read the keys to reinstate along with their values.
         for _ in 0..to_reinsate_len {
             // Read the key path.
-            // TODO: used keys are still [0; 32] but soon it will be updated
-            // the encoding format will change
-            let mut key_path = [0; 32];
+            let mut key_len = [0u8; 2];
+            reader.read_exact(&mut key_len)?;
+            let key_len = u16::from_le_bytes(key_len);
+            let mut key_path = vec![0; dbg!(key_len) as usize];
             reader.read_exact(&mut key_path)?;
             // Read the value.
             let mut value = Vec::new();
