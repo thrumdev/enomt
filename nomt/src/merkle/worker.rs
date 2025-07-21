@@ -366,7 +366,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                 start_index,
                 next_index,
                 seek_result.terminal.clone(),
-                seek_result.collision_ops,
+                seek_result.collision_ops.clone(),
             );
 
             if let Some(ref mut witnessed_paths) = output.witnessed_paths {
@@ -376,6 +376,17 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                         // guaranteed not to have been altered by anything we've done so far.
                         siblings: seek_result.siblings,
                         terminal: match seek_result.terminal.clone() {
+                            Some(leaf_data) if leaf_data.collision => {
+                                // UNWRAP: CollisionLeaf exepects collision_ops to be present.
+                                let collision_ops = seek_result
+                                    .collision_ops
+                                    .as_ref()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|(k, v)| (k.len() as u16, *v))
+                                    .collect();
+                                PathProofTerminal::CollisionLeaf(leaf_data, collision_ops)
+                            }
                             Some(leaf_data) => PathProofTerminal::Leaf(leaf_data),
                             None => PathProofTerminal::Terminator(seek_result.position.clone()),
                         },
@@ -407,7 +418,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
         &mut self,
         output: &mut WorkerOutput,
         page_set: &PageSet,
-        mut seek_result: Seek,
+        seek_result: Seek,
         ops: Option<Vec<(KeyPath, Option<ValueHash>)>>,
         batch_size: usize,
     ) {
@@ -416,7 +427,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
             Some(ref ops) => {
                 let ops = nomt_core::update::leaf_ops_spliced(
                     seek_result.terminal.clone(),
-                    seek_result.collision_ops.take(),
+                    seek_result.collision_ops.clone(),
                     ops,
                 );
                 self.page_walker
@@ -438,6 +449,17 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                 inner: PathProof {
                     siblings,
                     terminal: match seek_result.terminal.clone() {
+                        Some(leaf_data) if leaf_data.collision => {
+                            // UNWRAP: CollisionLeaf exepects collision_ops to be present.
+                            let collision_ops = seek_result
+                                .collision_ops
+                                .as_ref()
+                                .unwrap()
+                                .iter()
+                                .map(|(k, v)| (k.len() as u16, *v))
+                                .collect();
+                            PathProofTerminal::CollisionLeaf(leaf_data, collision_ops)
+                        }
                         Some(leaf_data) => PathProofTerminal::Leaf(leaf_data),
                         None => PathProofTerminal::Terminator(seek_result.position.clone()),
                     },

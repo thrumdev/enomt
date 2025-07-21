@@ -5,6 +5,7 @@ use nomt::{
     hasher::{Blake3Hasher, NodeHasher, ValueHasher},
     trie::{KeyPath, LeafData},
 };
+use nomt_core::collisions::collision_key;
 
 fn build_collision_subtree(items: &[(KeyPath, Vec<u8>)]) -> (KeyPath, [u8; 32], bool) {
     let first_key = items[0].0.clone();
@@ -15,11 +16,7 @@ fn build_collision_subtree(items: &[(KeyPath, Vec<u8>)]) -> (KeyPath, [u8; 32], 
             value_hash: Blake3Hasher::hash_value(&v),
             collision: false,
         };
-        (
-            k.len().to_be_bytes()[6..8].to_vec(),
-            Blake3Hasher::hash_leaf(&leaf),
-            false,
-        )
+        (collision_key(k), Blake3Hasher::hash_leaf(&leaf), false)
     });
 
     let subtree_root =

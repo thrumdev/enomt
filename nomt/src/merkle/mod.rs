@@ -365,10 +365,22 @@ impl Updater {
             seeker.recv_page(&mut page_set)?;
         };
 
-        let terminal = found
-            .terminal
-            .map(PathProofTerminal::Leaf)
-            .unwrap_or_else(|| PathProofTerminal::Terminator(found.position.clone()));
+        let terminal = match found.terminal {
+            Some(leaf) if !leaf.collision => PathProofTerminal::Leaf(leaf),
+            Some(leaf) => {
+                // UNWRAP: if the terminal is a collision leaf, then collision_ops are
+                // expected to be present.
+                let collision_ops = found
+                    .collision_ops
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| (k.len() as u16, *v))
+                    .collect();
+                PathProofTerminal::CollisionLeaf(leaf, collision_ops)
+            }
+            None => PathProofTerminal::Terminator(found.position.clone()),
+        };
 
         Ok(PathProof {
             terminal,
@@ -430,13 +442,34 @@ impl UpdateHandle {
                     let witnessed_end = witnessed_start + batch_size;
                     for (k, v) in &self.shared.read_write[witnessed_start..witnessed_end] {
                         if v.is_read() {
-                            let value_hash = leaf_data.as_ref().and_then(|leaf_data| {
-                                if &leaf_data.key_path == k {
-                                    Some(leaf_data.value_hash)
-                                } else {
+                            let value_hash = match &leaf_data {
+                                // If collision leaf but the key does not collide,
+                                // then the value does not exist.
+                                Some(leaf) if leaf.collision && !collides(&leaf.key_path, k) => {
                                     None
                                 }
-                            });
+                                // If collision leaf and key collide, the key must be searched
+                                // through the collision operations.
+                                Some(leaf) if leaf.collision => {
+                                    // Extract collision ops from the last inserted witnessed path.
+                                    let Some(PathProofTerminal::CollisionLeaf(_, collision_ops)) =
+                                        witness.path_proofs.last().map(|path| &path.inner.terminal)
+                                    else {
+                                        panic!(
+                                            "Expecteed PathProofTerminal::CollisionLeaf terminal"
+                                        )
+                                    };
+
+                                    collision_ops
+                                        .binary_search_by_key(&(k.len() as u16), |(k_len, _)| {
+                                            *k_len
+                                        })
+                                        .map(|idx| collision_ops[idx].1)
+                                        .ok()
+                                }
+                                Some(leaf) if &leaf.key_path == k => Some(leaf.value_hash),
+                                Some(_) | None => None,
+                            };
 
                             witness.operations.reads.push(WitnessedRead {
                                 key: k.clone(),
