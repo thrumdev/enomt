@@ -601,7 +601,6 @@ mod tests {
             a.view_bits_mut::<Msb0>()[prefix_bit_len..].fill(false);
             let b = vec![255; 1024];
 
-            dbg!(prefix_bit_len);
             let bit_res = super::bit_prefix_len(&a, &b);
             let byte_res = super::byte_prefix_len(&a, &b);
 

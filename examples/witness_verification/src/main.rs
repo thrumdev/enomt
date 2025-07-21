@@ -41,7 +41,9 @@ fn main() -> Result<()> {
                         value_hash,
                         collision: false,
                     };
-                    assert!(verified.confirm_value(&leaf).unwrap());
+                    assert!(verified
+                        .confirm_value::<Blake3Hasher>(&leaf.key_path, leaf.value_hash)
+                        .unwrap());
                 }
             }
         }

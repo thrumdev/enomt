@@ -28,7 +28,10 @@ fn prove_in_session() {
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)
             .expect("verification failed")
-            .confirm_value(&expected_leaf)
+            .confirm_value::<nomt::hasher::Blake3Hasher>(
+                &expected_leaf.key_path,
+                expected_leaf.value_hash
+            )
             .unwrap());
     }
 
@@ -69,7 +72,10 @@ fn prove_in_session_against_overlay() {
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)
             .expect("verification failed")
-            .confirm_value(&expected_leaf)
+            .confirm_value::<nomt::hasher::Blake3Hasher>(
+                &expected_leaf.key_path,
+                expected_leaf.value_hash
+            )
             .unwrap());
     }
 
@@ -124,7 +130,10 @@ fn prove_in_session_no_cache() {
         assert!(proof
             .verify::<nomt::hasher::Blake3Hasher>(k.view_bits::<Msb0>(), root)
             .expect("verification failed")
-            .confirm_value(&expected_leaf)
+            .confirm_value::<nomt::hasher::Blake3Hasher>(
+                &expected_leaf.key_path,
+                expected_leaf.value_hash
+            )
             .unwrap());
     }
 

@@ -13,13 +13,13 @@ use crate::{
 };
 
 use super::{
-    collides,
     page_set::{PageOrigin, PageSet},
     page_walker::PageSet as _,
     BucketInfo, LiveOverlay, PAGE_ELISION_THRESHOLD,
 };
 
 use nomt_core::{
+    collisions,
     page::DEPTH,
     page_id::{PageId, ROOT_PAGE_ID},
     trie::{self, KeyPath, Node, ValueHash},
@@ -41,7 +41,6 @@ struct SeekRequest {
     position: TriePosition,
     page_id: Option<PageId>,
     siblings: Vec<Node>,
-    collision_siblings: Option<Vec<Node>>,
     collision_ops: Option<Vec<(KeyPath, ValueHash)>>,
     state: RequestState,
     ios: usize,
@@ -53,18 +52,13 @@ impl SeekRequest {
         overlay: &LiveOverlay,
         key: KeyPath,
         root: Node,
-        record_siblings: bool,
     ) -> SeekRequest {
         let state = if trie::is_terminator::<H>(&root) {
             RequestState::Completed(None)
         } else if trie::is_leaf::<H>(&root) {
             RequestState::begin_leaf_fetch::<H>(read_transaction, overlay, &TriePosition::new())
         } else if trie::is_collision_leaf::<H>(&root) {
-            RequestState::begin_collision_leaves_fetch::<H>(
-                read_transaction,
-                &TriePosition::new(),
-                record_siblings,
-            )
+            RequestState::begin_collision_leaves_fetch::<H>(read_transaction, &TriePosition::new())
         } else {
             RequestState::Seeking
         };
@@ -74,7 +68,6 @@ impl SeekRequest {
             position: TriePosition::new(),
             page_id: None,
             siblings: Vec::new(),
-            collision_siblings: None,
             collision_ops: None,
             state,
             ios: 0,
@@ -175,7 +168,6 @@ impl SeekRequest {
                 self.state = RequestState::begin_collision_leaves_fetch::<H>(
                     read_transaction,
                     &self.position,
-                    record_siblings,
                 );
                 self.continue_leaves_fetch::<H>(None, overlay, None);
                 return;
@@ -222,98 +214,22 @@ impl SeekRequest {
 
     fn continue_seek_over_collision_subtree<H: HashAlgorithm>(
         &mut self,
-        record_siblings: bool,
         collision_key_values: Vec<(Vec<u8>, [u8; 32])>,
     ) {
         // PANIC: collision_key_values is not expected to be empty.
-        let (collision_leaf_key, collision_leaf_value_hash) = collision_key_values[0].clone();
-
-        let collides = collides(&collision_leaf_key, &self.key);
+        let (collision_leaf_key, _) = collision_key_values[0].clone();
 
         self.collision_ops = Some(collision_key_values.clone());
 
+        let collision_subtree_root = collisions::build_subtrie::<H>(
+            collision_key_values.into_iter().map(|(k, v)| (k, v, false)),
+        );
+
         self.state = RequestState::Completed(Some(trie::LeafData {
             key_path: collision_leaf_key,
-            value_hash: collision_leaf_value_hash,
+            value_hash: collision_subtree_root,
             collision: true,
         }));
-
-        // If either the key does not collide or siblings are not required to be
-        // recorded, than return early.
-        if !collides || !record_siblings {
-            return;
-        }
-
-        let ops: Vec<_> = collision_key_values
-            .into_iter()
-            .map(|(k, v)| (k.len().to_be_bytes()[6..8].to_vec(), v, false))
-            .collect();
-
-        let collision_key_path = self.key.len().to_be_bytes();
-        let collision_key_path = collision_key_path[6..8].view_bits::<Msb0>();
-
-        let is_sibling = |pos: &TriePosition| -> bool {
-            if pos.depth() == 0 {
-                return false;
-            }
-
-            let pos_path = pos.path();
-            let pos_last_bit = pos_path.len() - 1;
-            collision_key_path.starts_with(&pos_path[..pos_last_bit])
-                && pos_path[pos_last_bit] != collision_key_path[pos_last_bit]
-        };
-
-        let mut collision_siblings = vec![];
-        let mut max_seek_depth = 0;
-        let mut position = TriePosition::new();
-
-        nomt_core::update::build_trie::<H>(0, ops.clone(), |control| {
-            let node = control.node();
-            let up = control.up();
-            let down = control.down();
-
-            if up {
-                position.up(1);
-            }
-
-            if is_sibling(&position) {
-                collision_siblings.push((position.depth(), node));
-            }
-
-            for bit in down {
-                position.down(*bit);
-
-                if is_sibling(&position) {
-                    collision_siblings.push((position.depth(), node));
-                }
-
-                if collision_key_path.starts_with(position.path())
-                    && position.depth() > max_seek_depth
-                {
-                    max_seek_depth = position.depth();
-                }
-            }
-        });
-
-        collision_siblings.sort_by_key(|(d, _)| *d);
-        let mut iter_siblings = collision_siblings.into_iter().rev().peekable();
-
-        let mut final_siblings = vec![];
-
-        for d in (0..=max_seek_depth).rev() {
-            match iter_siblings.peek() {
-                Some((sibling_depth, _)) if *sibling_depth == d => {
-                    let sibling = iter_siblings.next().unwrap().1;
-                    final_siblings.push(sibling)
-                }
-                Some(_) | None => final_siblings.push(trie::TERMINATOR),
-            }
-        }
-
-        // Reverse the vector to have vector from the subroot of the collision
-        // tree to the terminal.
-        final_siblings.reverse();
-        self.collision_siblings = Some(final_siblings);
     }
 
     fn continue_leaf_fetch<H: HashAlgorithm>(&mut self, leaf: Option<LeafNodeRef>) {
@@ -357,7 +273,6 @@ impl SeekRequest {
             ref mut beatree_iterator,
             ref mut collected_leaf_data,
             ref collision,
-            ref record_siblings,
             ..
         } = self.state
         else {
@@ -462,7 +377,7 @@ impl SeekRequest {
 
         if *collision {
             let collision_key_values: Vec<(Vec<u8>, [u8; 32])> = ops.collect();
-            self.continue_seek_over_collision_subtree::<H>(*record_siblings, collision_key_values);
+            self.continue_seek_over_collision_subtree::<H>(collision_key_values);
             return;
         }
 
@@ -513,7 +428,6 @@ enum RequestState {
         needed_leaves: NeededLeavesIter,
         collected_leaf_data: Vec<(KeyPath, ValueHash)>,
         collision: bool,
-        record_siblings: bool,
     },
     Completed(Option<trie::LeafData>),
 }
@@ -572,14 +486,12 @@ impl RequestState {
             needed_leaves,
             collected_leaf_data: Vec::with_capacity(PAGE_ELISION_THRESHOLD as usize),
             collision: false,
-            record_siblings: false,
         }
     }
 
     fn begin_collision_leaves_fetch<H: HashAlgorithm>(
         read_transaction: &BeatreeReadTx,
         pos: &TriePosition,
-        record_siblings: bool,
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
@@ -592,7 +504,6 @@ impl RequestState {
             needed_leaves,
             collected_leaf_data: Vec::with_capacity(PAGE_ELISION_THRESHOLD as usize),
             collision: true,
-            record_siblings,
         }
     }
 }
@@ -734,7 +645,7 @@ impl<H: HashAlgorithm> Seeker<H> {
     pub fn take_completion(&mut self) -> Option<Seek> {
         if self.requests.front().map_or(false, |r| r.is_completed()) {
             // UNWRAP: just checked existence.
-            let mut request = self.requests.pop_front().unwrap();
+            let request = self.requests.pop_front().unwrap();
             // PANIC: checked above.
             let RequestState::Completed(terminal) = request.state else {
                 unreachable!()
@@ -742,21 +653,11 @@ impl<H: HashAlgorithm> Seeker<H> {
 
             self.processed += 1;
 
-            let _collision_siblings_index =
-                if let Some(collision_siblings) = request.collision_siblings {
-                    let collision_siblings_index = request.siblings.len();
-                    request.siblings.extend(collision_siblings);
-                    Some(collision_siblings_index)
-                } else {
-                    None
-                };
-
             return Some(Seek {
                 key: request.key,
                 position: request.position,
                 page_id: request.page_id,
                 siblings: request.siblings,
-                _collision_siblings_index,
                 collision_ops: request.collision_ops,
                 ios: request.ios,
                 terminal,
@@ -793,7 +694,6 @@ impl<H: HashAlgorithm> Seeker<H> {
             &self.overlay,
             key,
             self.root,
-            self.record_siblings,
         ));
         self.idle_requests.push_back(request_index);
     }
@@ -1084,9 +984,6 @@ pub struct Seek {
     /// The siblings along the path to the terminal, including the terminal's sibling.
     /// Empty if the seeker wasn't configured to record siblings.
     pub siblings: Vec<Node>,
-    /// Index within `siblings` field after which only siblings which are part of the
-    /// collision subtree are collected.
-    pub _collision_siblings_index: Option<usize>,
     /// Store all the operations that collide with this Seek.
     pub collision_ops: Option<Vec<(Vec<u8>, [u8; 32])>>,
     /// The terminal node encountered.

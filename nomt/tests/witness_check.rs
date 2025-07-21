@@ -116,7 +116,9 @@ fn witness_with_var_len_keys() {
                         value_hash: *v,
                         collision: false,
                     };
-                    assert!(verified.confirm_value(&leaf).unwrap());
+                    assert!(verified
+                        .confirm_value::<Blake3Hasher>(&leaf.key_path, leaf.value_hash)
+                        .unwrap());
                 }
             }
         }
@@ -147,8 +149,8 @@ fn witness_with_var_len_keys() {
 }
 
 #[test]
-fn mutliproof_with_var_len_keys() {
-    let (prev_root, new_root, witness) = prepare_for_witness_check("mutliproof_with_var_len_keys");
+fn multiproof_with_var_len_keys() {
+    let (prev_root, new_root, witness) = prepare_for_witness_check("multiproof_with_var_len_keys");
     let mut path_proofs: Vec<_> = witness
         .path_proofs
         .into_iter()
@@ -180,9 +182,251 @@ fn mutliproof_with_var_len_keys() {
                     value_hash: *v,
                     collision: false,
                 };
-                assert!(verified_multi_proof.confirm_value(&leaf).unwrap());
                 assert!(verified_multi_proof
-                    .confirm_value_with_index(&leaf, index)
+                    .confirm_value(&leaf.key_path, leaf.value_hash)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_value_with_index(&leaf.key_path, leaf.value_hash, index)
+                    .unwrap());
+            }
+        }
+    }
+
+    let updates: Vec<_> = witness
+        .operations
+        .writes
+        .into_iter()
+        .map(|w| (w.key, w.value))
+        .collect();
+
+    assert_eq!(
+        proof::verify_multi_proof_update::<Blake3Hasher>(&verified_multi_proof, updates).unwrap(),
+        new_root.into_inner(),
+    );
+}
+
+#[test]
+fn witness_with_collision_keys() {
+    let (prev_root, new_root, witness) = {
+        let mut t = Test::new("witness_with_collision_keys");
+
+        let k1 = vec![0, 0, 0];
+        let k2 = vec![0, 0, 0, 0, 0];
+        let k3 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let k4 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let k5 = vec![0, 0, 1];
+
+        let k6 = vec![0, 0, 0, 0];
+        let k7 = vec![0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+        let k_wrong1 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let k_wrong2 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        let (prev_root, _) = {
+            t.write(k1.clone(), Some(vec![1]));
+            t.write(k2.clone(), Some(vec![2]));
+            t.write(k3.clone(), Some(vec![3]));
+            t.write(k4.clone(), Some(vec![4]));
+            t.write(k5.clone(), Some(vec![5]));
+            t.commit()
+        };
+
+        let (new_root, witness) = {
+            // read a keys from the collision subtree
+            t.read(k1);
+            t.read(k2.clone());
+            t.read(k3.clone());
+            t.read(k4);
+            t.read(k5.clone());
+
+            // read a key which doesn not collide and is not present in the subtree
+            assert!(t.read(k_wrong1).is_none());
+
+            // read a key which collides but is not in the collision subtree
+            assert!(t.read(k_wrong2).is_none());
+
+            // Write new key within the collision subtree
+            t.write(k6.clone(), Some(vec![5]));
+
+            // Delete a key from the collision subtree
+            t.write(k3.clone(), None);
+
+            //// Modify a leaf within the collision subtree
+            t.write(k2.clone(), Some(vec![6]));
+
+            // Add a leaf which goes on top of a collison leaf
+            // but do not collides
+            t.write(k7.clone(), Some(vec![7]));
+
+            //// Remove a key which should move the collision leaf
+            t.write(k5.clone(), Some(vec![7]));
+
+            t.commit()
+        };
+
+        assert_eq!(witness.operations.reads.len(), 7);
+        assert_eq!(witness.operations.writes.len(), 5);
+        (prev_root, new_root, witness)
+    };
+
+    let mut updates = Vec::new();
+    for (i, witnessed_path) in witness.path_proofs.iter().enumerate() {
+        let verified = witnessed_path
+            .inner
+            .verify::<Blake3Hasher>(&witnessed_path.path.path(), prev_root.into_inner())
+            .unwrap();
+        for read in witness
+            .operations
+            .reads
+            .iter()
+            .skip_while(|r| r.path_index != i)
+            .take_while(|r| r.path_index == i)
+        {
+            match read.value {
+                None => assert!(verified.confirm_nonexistence(&read.key).unwrap()),
+                Some(ref v) => {
+                    let leaf = LeafData {
+                        key_path: read.key.clone(),
+                        value_hash: *v,
+                        collision: false,
+                    };
+                    assert!(verified
+                        .confirm_value::<Blake3Hasher>(&leaf.key_path, leaf.value_hash)
+                        .unwrap());
+                }
+            }
+        }
+
+        let mut write_ops = Vec::new();
+        for write in witness
+            .operations
+            .writes
+            .iter()
+            .skip_while(|r| r.path_index != i)
+            .take_while(|r| r.path_index == i)
+        {
+            write_ops.push((write.key.clone(), write.value.clone()));
+        }
+
+        if !write_ops.is_empty() {
+            updates.push(proof::PathUpdate {
+                inner: verified,
+                ops: write_ops,
+            });
+        }
+    }
+
+    assert_eq!(
+        proof::verify_update::<Blake3Hasher>(prev_root.into_inner(), &updates).unwrap(),
+        new_root.into_inner(),
+    );
+}
+
+#[test]
+fn multiproof_with_collision_keys() {
+    let (prev_root, new_root, witness) = {
+        let mut t = Test::new("multiproof_with_collision_keys");
+
+        let k1 = vec![0, 0, 0];
+        let k2 = vec![0, 0, 0, 0, 0];
+        let k3 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let k4 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let k5 = vec![0, 0, 1];
+
+        let k6 = vec![0, 0, 0, 0];
+        let k7 = vec![0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+        let k_wrong1 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let k_wrong2 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let k_wrong_eq_len = vec![0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+        let (prev_root, _) = {
+            t.write(k1.clone(), Some(vec![1]));
+            t.write(k2.clone(), Some(vec![2]));
+            t.write(k3.clone(), Some(vec![3]));
+            t.write(k4.clone(), Some(vec![4]));
+            t.write(k5.clone(), Some(vec![5]));
+            t.commit()
+        };
+
+        let (new_root, witness) = {
+            // read a keys from the collision subtree
+            t.read(k1);
+            t.read(k2.clone());
+            t.read(k3.clone());
+            t.read(k4);
+            t.read(k5.clone());
+
+            // read a key which does not collide and is not present in the subtree
+            assert!(t.read(k_wrong1).is_none());
+
+            // read a key that does not collide, is not present in the subtree,
+            // but has the same length of another key in the collision subtree
+            assert!(t.read(k_wrong_eq_len).is_none());
+
+            // read a key which collides but is not in the collision subtree
+            assert!(t.read(k_wrong2).is_none());
+
+            // Write new key within the collision subtree
+            t.write(k6.clone(), Some(vec![5]));
+
+            // Delete a key from the collision subtree
+            t.write(k3.clone(), None);
+
+            // Modify a leaf within the collision subtree
+            t.write(k2.clone(), Some(vec![6]));
+
+            // Add a leaf which goes on top of a collison leaf
+            // but do not collides
+            t.write(k7.clone(), Some(vec![7]));
+
+            // Remove a key which should move the collision leaf
+            t.write(k5.clone(), Some(vec![7]));
+
+            t.commit()
+        };
+
+        assert_eq!(witness.operations.reads.len(), 8);
+        assert_eq!(witness.operations.writes.len(), 5);
+        (prev_root, new_root, witness)
+    };
+
+    let mut path_proofs: Vec<_> = witness
+        .path_proofs
+        .into_iter()
+        .map(|WitnessedPath { inner, .. }| inner)
+        .collect();
+    path_proofs.sort_by(|p1, p2| p1.terminal.path().cmp(p2.terminal.path()));
+
+    let multi_proof = MultiProof::from_path_proofs(path_proofs);
+    let verified_multi_proof =
+        nomt_core::proof::verify_multi_proof::<Blake3Hasher>(&multi_proof, prev_root.into_inner())
+            .unwrap();
+
+    for read in witness.operations.reads {
+        let index = verified_multi_proof.find_index_for(&read.key).unwrap();
+        assert_eq!(index, read.path_index);
+
+        match read.value {
+            None => {
+                assert!(verified_multi_proof
+                    .confirm_nonexistence(&read.key)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_nonexistence_with_index(&read.key, index)
+                    .unwrap());
+            }
+            Some(ref v) => {
+                let leaf = LeafData {
+                    key_path: read.key.clone(),
+                    value_hash: *v,
+                    collision: false,
+                };
+                assert!(verified_multi_proof
+                    .confirm_value(&leaf.key_path, leaf.value_hash)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_value_with_index(&leaf.key_path, leaf.value_hash, index)
                     .unwrap());
             }
         }
@@ -261,7 +505,12 @@ fn produced_witness_validity() {
                         value_hash: *v,
                         collision: false,
                     };
-                    assert!(verified.confirm_value(&leaf).unwrap());
+                    assert!(verified
+                        .confirm_value::<nomt::hasher::Blake3Hasher>(
+                            &leaf.key_path,
+                            leaf.value_hash
+                        )
+                        .unwrap());
                 }
             }
         }

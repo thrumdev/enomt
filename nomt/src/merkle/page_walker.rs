@@ -42,8 +42,6 @@
 //! are recorded as part of the output. This is useful for splitting the work of updating pages
 //! across multiple threads.
 
-use std::ops::Range;
-
 use bitvec::prelude::*;
 use nomt_core::{
     hasher::NodeHasher,
@@ -55,7 +53,7 @@ use nomt_core::{
 };
 
 use crate::{
-    merkle::{collides, page_set::PageOrigin, BucketInfo, ElidedChildren, PAGE_ELISION_THRESHOLD},
+    merkle::{page_set::PageOrigin, BucketInfo, ElidedChildren, PAGE_ELISION_THRESHOLD},
     page_cache::{Page, PageMut},
     page_diff::PageDiff,
 };
@@ -346,40 +344,9 @@ impl<H: NodeHasher> PageWalker<H> {
 
         let start_position = self.position.clone();
 
-        // Extract collision ranges
-        let mut ops: Vec<_> = ops.into_iter().map(|(k, h)| (k, h, false)).collect();
-        let collision_ranges = extract_collision_ranges(&ops);
-
-        // Build collision subtree
-        for Range { start, end } in collision_ranges.into_iter().rev() {
-            // UNWRAP: start is a valid ops index.
-            let collision_subtree_key = ops.get(start).unwrap().0.clone();
-
-            let collision_ops = ops.drain(start..end).map(|(key, value_hash, _)| {
-                let leaf = trie::LeafData {
-                    key_path: key.clone(),
-                    value_hash,
-                    collision: false,
-                };
-                (
-                    key.len().to_be_bytes()[6..8].to_vec(),
-                    H::hash_leaf(&leaf),
-                    false,
-                )
-            });
-
-            let collision_subtree_root =
-                nomt_core::update::build_trie::<H>(0, collision_ops, |_control| {});
-
-            ops.insert(
-                start,
-                (
-                    collision_subtree_key,
-                    collision_subtree_root,
-                    true, /*collision*/
-                ),
-            );
-        }
+        // Given the ops, build the required collision subtries and modify the ops
+        // by inserting the collision subtries root as collision leaves.
+        let ops = nomt_core::collisions::build_collision_subtries::<H>(ops.into_iter());
 
         // replace sub-trie at the given position
         nomt_core::update::build_trie::<H>(self.position.depth() as usize, ops, |control| {
@@ -1032,39 +999,6 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
     counter
 }
 
-pub fn extract_collision_ranges(ops: &Vec<(Vec<u8>, [u8; 32], bool)>) -> Vec<Range<usize>> {
-    let mut collision_keys_ranges = vec![];
-
-    let mut pending_range: Option<usize> = None;
-    for (idx, window) in ops.windows(2).enumerate() {
-        let (k1, k2) = (&window[0].0, &window[1].0);
-
-        let collides = collides(k1, k2);
-
-        match (collides, &pending_range) {
-            // range did not started
-            (false, None) => (),
-            // range starts
-            (true, None) => {
-                pending_range.replace(idx);
-            }
-            // range already started
-            (true, Some(_)) => (),
-            // range finishes
-            (false, Some(start)) => {
-                collision_keys_ranges.push(*start..idx + 1);
-                pending_range = None;
-            }
-        }
-
-        if idx == ops.len() - 2 && collides {
-            let start = pending_range.take().unwrap();
-            collision_keys_ranges.push(start..ops.len());
-        }
-    }
-    collision_keys_ranges
-}
-
 /// Reconstruct the elided pages using all the key-value pairs present in the elided subtree.
 /// Reconstruction requires the page and its page_id, where the elided child page was found,
 /// as well as the `TriePosition` within that page.
@@ -1117,7 +1051,7 @@ mod tests {
     use bitvec::prelude::*;
     use imbl::HashMap;
     use nomt_core::page_id::{ChildPageIndex, PageId, PageIdsIterator};
-    use std::ops::{Deref, Range};
+    use std::ops::Deref;
 
     macro_rules! trie_pos {
         ($($t:tt)+) => {
@@ -2299,38 +2233,6 @@ mod tests {
                 page.into_inner().deref().deref()
             );
         }
-    }
-
-    #[test]
-    fn extract_collision_ranges() {
-        let ops = vec![
-            vec![0, 0],
-            vec![0, 0, 0],
-            vec![0, 1],
-            vec![0, 2, 3],
-            vec![0, 2, 3, 0],
-            vec![0, 2, 3, 0, 0],
-            vec![0, 2, 3, 0, 0, 0, 0, 0],
-            vec![0, 2, 3, 0, 0, 0, 0, 0, 0],
-            vec![0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            vec![0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            vec![1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            vec![2],
-            vec![2, 0, 0, 0, 0, 0],
-            vec![6, 0, 0, 0, 0, 0],
-            vec![128, 0, 0, 0, 0, 0],
-            vec![128, 0, 0, 0, 0, 0, 0, 0, 0],
-            vec![128, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        ]
-        .into_iter()
-        .map(|key| (key, [0; 32], false))
-        .collect();
-
-        let expected_collision_ranges: Vec<Range<usize>> = vec![0..2, 3..9, 11..13, 14..17];
-
-        let collision_ranges = super::extract_collision_ranges(&ops);
-
-        assert_eq!(expected_collision_ranges, collision_ranges);
     }
 
     #[test]

@@ -3,12 +3,13 @@
 //! the inclusion of all provided path proofs.
 
 use crate::{
+    collisions::{self, build_collision_subtries, collides},
     hasher::NodeHasher,
     proof::{
         path_proof::{hash_path, shared_bits},
         KeyOutOfScope, PathProof, PathProofTerminal,
     },
-    trie::{InternalData, KeyPath, LeafData, Node, NodeKind, ValueHash, TERMINATOR},
+    trie::{InternalData, KeyPath, Node, NodeKind, ValueHash, TERMINATOR},
     trie_pos::TriePosition,
 };
 
@@ -318,18 +319,22 @@ pub struct VerifiedMultiProof {
     root: Node,
 }
 
-// TODO: adapt to FullPrefixSubstree handling
 impl VerifiedMultiProof {
     /// Find the index of the path contained in this multi-proof, if any, which would prove
     /// the given key.
     ///
     /// Runtime is O(log(n)) in the number of paths this multi-proof contains.
     pub fn find_index_for(&self, key_path: &KeyPath) -> Result<usize, KeyOutOfScope> {
-        let search_result = self
-            .inner
-            .binary_search_by(|v| v.terminal.path().cmp(&key_path.view_bits::<Msb0>()));
+        self.inner
+            .binary_search_by(|v| {
+                let mut subtree_root = v.terminal.path().to_bitvec();
+                subtree_root.resize_with(v.depth, |_| false);
+                let mut key_path = key_path.view_bits::<Msb0>().to_bitvec();
+                key_path.resize_with(v.depth, |_| false);
 
-        search_result.map_err(|_| KeyOutOfScope)
+                subtree_root.as_bitslice().cmp(&key_path)
+            })
+            .map_err(|_| KeyOutOfScope)
     }
 
     /// Check whether this proves that a key has no value in the trie.
@@ -351,9 +356,13 @@ impl VerifiedMultiProof {
     /// A return value of `Ok(false)` means that this key has a different value or does not exist.
     ///
     /// Fails if the key is out of the scope of this proof.
-    pub fn confirm_value(&self, expected_leaf: &LeafData) -> Result<bool, KeyOutOfScope> {
-        let index = self.find_index_for(&expected_leaf.key_path)?;
-        Ok(self.confirm_value_inner(&expected_leaf, index))
+    pub fn confirm_value(
+        &self,
+        key_path: &KeyPath,
+        value_hash: ValueHash,
+    ) -> Result<bool, KeyOutOfScope> {
+        let index = self.find_index_for(&key_path)?;
+        Ok(self.confirm_value_inner(key_path, value_hash, index))
     }
 
     /// Check whether the specific path with index `index` proves that a key has no value in
@@ -404,7 +413,8 @@ impl VerifiedMultiProof {
     /// Panics if the index is out-of-bounds.
     pub fn confirm_value_with_index(
         &self,
-        expected_leaf: &LeafData,
+        key_path: &KeyPath,
+        value_hash: ValueHash,
         index: usize,
     ) -> Result<bool, KeyOutOfScope> {
         let path = &self.inner[index];
@@ -415,10 +425,10 @@ impl VerifiedMultiProof {
             terminal_bit_path.resize_with(terminal_depth, |_| false);
         }
         let terminal_position = TriePosition::from_bitslice(&terminal_bit_path[..terminal_depth]);
-        let in_scope = terminal_position.subtrie_contains(&expected_leaf.key_path);
+        let in_scope = terminal_position.subtrie_contains(&key_path);
 
         if in_scope {
-            Ok(self.confirm_value_inner(&expected_leaf, index))
+            Ok(self.confirm_value_inner(&key_path, value_hash, index))
         } else {
             Err(KeyOutOfScope)
         }
@@ -428,15 +438,25 @@ impl VerifiedMultiProof {
     fn confirm_nonexistence_inner(&self, key_path: &KeyPath, index: usize) -> bool {
         match self.inner[index].terminal {
             PathProofTerminal::Terminator(_) => true,
+            PathProofTerminal::CollisionLeaf(ref l, _) if !collides(&l.key_path, key_path) => true,
+            PathProofTerminal::CollisionLeaf(_, ref collision_data) => collision_data
+                .binary_search_by_key(&(key_path.len() as u16), |(k, _)| *k)
+                .is_err(),
             PathProofTerminal::Leaf(ref leaf_data) => &leaf_data.key_path != key_path,
         }
     }
 
     // assume in-scope
-    fn confirm_value_inner(&self, expected_leaf: &LeafData, index: usize) -> bool {
+    fn confirm_value_inner(&self, key_path: &KeyPath, value_hash: ValueHash, index: usize) -> bool {
         match self.inner[index].terminal {
             PathProofTerminal::Terminator(_) => false,
-            PathProofTerminal::Leaf(ref leaf_data) => leaf_data == expected_leaf,
+            PathProofTerminal::CollisionLeaf(ref l, _) if !collides(&l.key_path, key_path) => false,
+            PathProofTerminal::CollisionLeaf(_, ref collision_data) => collision_data
+                .binary_search_by_key(&(key_path.len() as u16), |(k, _)| *k)
+                .map_or(false, |idx| collision_data[idx].1 == value_hash),
+            PathProofTerminal::Leaf(ref leaf_data) => {
+                &leaf_data.key_path == key_path && leaf_data.value_hash == value_hash
+            }
         }
     }
 }
@@ -515,6 +535,19 @@ fn verify_range<H: NodeHasher>(
             terminal_bit_path.drain(..start_depth);
         }
         terminal_bit_path.resize_with(unique_len, |_| false);
+
+        if let Some(collision_ops) = terminal_path.terminal.collision_ops() {
+            let collision_subtree_root = collisions::build_subtrie::<H>(
+                collision_ops.into_iter().map(|(k, v)| (k, v, false)),
+            );
+            // UNWRAP: If collision_ops are available, then the terminal must be a leaf.
+            let leaf = terminal_path.terminal.as_leaf_option().unwrap();
+            // The value hash of the leaf is expected to be the same as that of
+            // the root of the collision subtree
+            if leaf.value_hash != collision_subtree_root {
+                return Err(MultiProofVerificationError::RootMismatch);
+            }
+        }
 
         let node = hash_path::<H>(
             terminal_path.terminal.node::<H>(),
@@ -743,11 +776,14 @@ impl CommonSiblings {
 ///
 /// Returns the root of the trie obtained after application of the given updates in the `paths`
 /// vector. In case the `paths` is empty, `prev_root` is returned.
-// TODO: adapt to FullPrefixSubstree handling
 pub fn verify_update<H: NodeHasher>(
     proof: &VerifiedMultiProof,
     ops: Vec<(KeyPath, Option<ValueHash>)>,
 ) -> Result<Node, MultiVerifyUpdateError> {
+    if ops.is_empty() {
+        return Ok(proof.root);
+    }
+
     // left frontier
     let mut pending_siblings: Vec<(Node, usize)> = Vec::new();
 
@@ -864,8 +900,8 @@ pub fn verify_update<H: NodeHasher>(
         };
     }
 
-    // UNWRAP: This is always full unless the update is empty
-    Ok(pending_siblings.pop().map(|n| n.0).unwrap_or(proof.root))
+    // UNWRAP: The root of the trie is expected to be the last pending sibling.
+    Ok(pending_siblings.pop().map(|n| n.0).unwrap())
 }
 
 fn hash_and_compact_terminal<H: NodeHasher>(
@@ -883,8 +919,6 @@ fn hash_and_compact_terminal<H: NodeHasher>(
         // SANITY: this is impossible in a well-formed input but we catch it as an error.
         // The reason this is impossible is because no terminal should be a prefix of another
         // terminal (by definition)
-        // TODO: this is clearly wrong with FullPrefixSubtree, but they will be treated separately.
-        // Thus, this function should continue to work on the same assumption.
         if n == skip {
             return Err(MultiVerifyUpdateError::PathPrefixOfAnother);
         }
@@ -896,8 +930,9 @@ fn hash_and_compact_terminal<H: NodeHasher>(
         skip // go to root
     };
 
-    // TODO: Handle Collisions
-    let ops = crate::update::leaf_ops_spliced(leaf, None, &ops).map(|(k, v)| (k, v, false));
+    let collision_ops = terminal.terminal.collision_ops();
+    let ops = crate::update::leaf_ops_spliced(leaf, collision_ops, &ops);
+    let ops = build_collision_subtries::<H>(ops);
     let sub_root = crate::update::build_trie::<H>(skip, ops, |_| {});
 
     let mut cur_node = sub_root;
@@ -925,8 +960,10 @@ fn hash_and_compact_terminal<H: NodeHasher>(
 
         match (NodeKind::of::<H>(&cur_node), NodeKind::of::<H>(&sibling)) {
             (NodeKind::Terminator, NodeKind::Terminator) => {}
-            (NodeKind::Leaf, NodeKind::Terminator) => {}
-            (NodeKind::Terminator, NodeKind::Leaf) => {
+            (NodeKind::Leaf, NodeKind::Terminator)
+            | (NodeKind::CollisionLeaf, NodeKind::Terminator) => {}
+            (NodeKind::Terminator, NodeKind::Leaf)
+            | (NodeKind::Terminator, NodeKind::CollisionLeaf) => {
                 // relocate sibling upwards.
                 cur_node = sibling;
             }
@@ -1469,8 +1506,12 @@ mod tests {
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
 
-        assert!(verified.confirm_value(&leaf_0).unwrap());
-        assert!(verified.confirm_value(&leaf_1).unwrap());
+        assert!(verified
+            .confirm_value(&leaf_0.key_path, leaf_0.value_hash)
+            .unwrap());
+        assert!(verified
+            .confirm_value(&leaf_1.key_path, leaf_1.value_hash)
+            .unwrap());
     }
 
     #[test]
@@ -1757,12 +1798,12 @@ mod tests {
         ]);
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
-        assert!(verified.confirm_value(&l0).unwrap());
-        assert!(verified.confirm_value(&l1).unwrap());
-        assert!(verified.confirm_value(&l2).unwrap());
-        assert!(verified.confirm_value(&l3).unwrap());
-        assert!(verified.confirm_value(&l4).unwrap());
-        assert!(verified.confirm_value(&l5).unwrap());
+        assert!(verified.confirm_value(&l0.key_path, l0.value_hash).unwrap());
+        assert!(verified.confirm_value(&l1.key_path, l1.value_hash).unwrap());
+        assert!(verified.confirm_value(&l2.key_path, l2.value_hash).unwrap());
+        assert!(verified.confirm_value(&l3.key_path, l3.value_hash).unwrap());
+        assert!(verified.confirm_value(&l4.key_path, l4.value_hash).unwrap());
+        assert!(verified.confirm_value(&l5.key_path, l5.value_hash).unwrap());
     }
 
     #[test]
@@ -1856,10 +1897,10 @@ mod tests {
         assert_eq!(multi_proof.siblings, vec![v0, e7, e6, e3, e2, e1, e5, e4]);
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
-        assert!(verified.confirm_value(&l1).unwrap());
-        assert!(verified.confirm_value(&l2).unwrap());
-        assert!(verified.confirm_value(&l3).unwrap());
-        assert!(verified.confirm_value(&l4).unwrap());
+        assert!(verified.confirm_value(&l1.key_path, l1.value_hash).unwrap());
+        assert!(verified.confirm_value(&l2.key_path, l2.value_hash).unwrap());
+        assert!(verified.confirm_value(&l3.key_path, l3.value_hash).unwrap());
+        assert!(verified.confirm_value(&l4.key_path, l4.value_hash).unwrap());
     }
 
     #[test]
