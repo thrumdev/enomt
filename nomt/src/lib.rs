@@ -9,6 +9,7 @@ use std::{mem, sync::Arc};
 
 use merkle::{UpdatePool, Updater};
 use nomt_core::{
+    collisions::collision_key,
     hasher::{NodeHasher, ValueHasher},
     page_id::ROOT_PAGE_ID,
     proof::PathProof,
@@ -921,7 +922,7 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
 
                 let collision_ops = collision_ops.into_iter().map(|(key, value_hash)| {
                     (
-                        key.len().to_be_bytes()[6..8].to_vec(),
+                        collision_key(&key),
                         H::hash_leaf(&trie::LeafData {
                             key_path: key,
                             value_hash,

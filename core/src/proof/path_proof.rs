@@ -1,9 +1,8 @@
 //! Proving and verifying inclusion, non-inclusion, and updates to the trie.
 
+use crate::collisions::{self, build_collision_subtries, collides};
 use crate::hasher::NodeHasher;
-use crate::trie::{
-    self, InternalData, KeyPath, LeafData, Node, NodeKind, MAX_KEY_PATH_LEN, TERMINATOR,
-};
+use crate::trie::{self, InternalData, KeyPath, LeafData, Node, NodeKind, ValueHash, TERMINATOR};
 use crate::trie_pos::TriePosition;
 
 use bitvec::prelude::*;
@@ -22,6 +21,7 @@ use alloc::vec::Vec;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PathProofTerminal {
     Leaf(LeafData),
+    CollisionLeaf(LeafData, Vec<(u16, ValueHash)>),
     Terminator(TriePosition),
 }
 
@@ -29,14 +29,16 @@ impl PathProofTerminal {
     /// Return the bit-path to the Terminal Node
     pub fn path(&self) -> &BitSlice<u8, Msb0> {
         match self {
-            Self::Leaf(leaf_data) => &leaf_data.key_path.view_bits(),
+            Self::Leaf(leaf_data) | Self::CollisionLeaf(leaf_data, _) => {
+                &leaf_data.key_path.view_bits()
+            }
             Self::Terminator(key_path) => key_path.path(),
         }
     }
 
     pub fn node<H: NodeHasher>(&self) -> Node {
         match self {
-            Self::Leaf(leaf_data) => H::hash_leaf(leaf_data),
+            Self::Leaf(leaf_data) | Self::CollisionLeaf(leaf_data, _) => H::hash_leaf(leaf_data),
             Self::Terminator(_key_path) => TERMINATOR,
         }
     }
@@ -44,9 +46,27 @@ impl PathProofTerminal {
     /// Transform this into an optional LeafData.
     pub fn as_leaf_option(&self) -> Option<LeafData> {
         match self {
-            Self::Leaf(leaf_data) => Some(leaf_data.clone()),
+            Self::Leaf(leaf_data) | Self::CollisionLeaf(leaf_data, _) => Some(leaf_data.clone()),
             Self::Terminator(_) => None,
         }
+    }
+
+    /// If the terminal is a CollisionLeaf, extract the collision key-value pair.
+    pub fn collision_ops(&self) -> Option<Vec<(KeyPath, ValueHash)>> {
+        let Self::CollisionLeaf(leaf_data, collision_data) = &self else {
+            return None;
+        };
+
+        let ops = collision_data
+            .iter()
+            .map(|(key_len, v)| {
+                let mut key_path = leaf_data.key_path.clone();
+                key_path.resize_with(*key_len as usize, || 0);
+                (key_path, *v)
+            })
+            .collect::<Vec<_>>();
+
+        Some(ops)
     }
 }
 
@@ -79,12 +99,25 @@ impl PathProof {
         key_path: &BitSlice<u8, Msb0>,
         root: Node,
     ) -> Result<VerifiedPathProof, PathProofVerificationError> {
-        if self.siblings.len() > core::cmp::min(key_path.len(), MAX_KEY_PATH_LEN * 8) {
+        if self.siblings.len() > key_path.len() {
             return Err(PathProofVerificationError::TooManySiblings);
         }
 
         let mut relevant_path = key_path.to_bitvec();
         relevant_path.resize_with(self.siblings.len(), |_| false);
+
+        if let Some(collision_ops) = self.terminal.collision_ops() {
+            let collision_subtree_root = collisions::build_subtrie::<H>(
+                collision_ops.into_iter().map(|(k, v)| (k, v, false)),
+            );
+            // UNWRAP: If collision_ops are available, then the terminal must be a leaf.
+            let leaf = self.terminal.as_leaf_option().unwrap();
+            // The value hash of the leaf is expected to be the same as that of
+            // the root of the collision subtree
+            if leaf.value_hash != collision_subtree_root {
+                return Err(PathProofVerificationError::RootMismatch);
+            }
+        }
 
         let cur_node = self.terminal.node::<H>();
 
@@ -95,14 +128,20 @@ impl PathProof {
         );
 
         if new_root == root {
+            let (terminal, collision_data) = match &self.terminal {
+                PathProofTerminal::Leaf(leaf_data) => (Some(leaf_data.clone()), None),
+                PathProofTerminal::CollisionLeaf(leaf_data, collision_data) => {
+                    (Some(leaf_data.clone()), Some(collision_data.clone()))
+                }
+                PathProofTerminal::Terminator(_) => (None, None),
+            };
+
             Ok(VerifiedPathProof {
                 key_path: relevant_path.into(),
-                terminal: match &self.terminal {
-                    PathProofTerminal::Leaf(leaf_data) => Some(leaf_data.clone()),
-                    PathProofTerminal::Terminator(_) => None,
-                },
+                terminal,
                 siblings: self.siblings.clone(),
                 root,
+                collision_data,
             })
         } else {
             Err(PathProofVerificationError::RootMismatch)
@@ -164,6 +203,7 @@ pub enum PathProofVerificationError {
 pub struct VerifiedPathProof {
     key_path: BitVec<u8, Msb0>,
     terminal: Option<LeafData>,
+    collision_data: Option<Vec<(u16, ValueHash)>>,
     siblings: Vec<Node>,
     root: Node,
 }
@@ -190,9 +230,30 @@ impl VerifiedPathProof {
     /// `Ok(false)` confirms that this key has a different value or does not exist.
     ///
     /// Fails if the key is out of the scope of this path.
-    pub fn confirm_value(&self, expected_leaf: &LeafData) -> Result<bool, KeyOutOfScope> {
-        self.in_scope(&expected_leaf.key_path)
-            .map(|_| self.terminal() == Some(expected_leaf))
+    pub fn confirm_value<H: NodeHasher>(
+        &self,
+        key_path: &KeyPath,
+        value_hash: ValueHash,
+    ) -> Result<bool, KeyOutOfScope> {
+        // First check the the key_path is within the scope of the terminal
+        self.in_scope(&key_path)?;
+
+        match self.terminal() {
+            Some(leaf_data) if leaf_data.collision && collides(&leaf_data.key_path, key_path) => {
+                // UNWRAP: collision_data is expected to be Some if the terminal is a collisio leaf
+                let collision_data = self.collision_data.as_ref().unwrap();
+                Ok(collision_data
+                    .binary_search_by_key(&(key_path.len() as u16), |(k, _)| *k)
+                    .map_or(false, |idx| collision_data[idx].1 == value_hash))
+            }
+            Some(leaf_data) if leaf_data.collision => Ok(false),
+            Some(leaf_data)
+                if &leaf_data.key_path == key_path && leaf_data.value_hash == value_hash =>
+            {
+                Ok(true)
+            }
+            Some(_) | None => Ok(false),
+        }
     }
 
     /// Check whether this proves that a key has no value in the trie.
@@ -202,11 +263,21 @@ impl VerifiedPathProof {
     ///
     /// Fails if the key is out of the scope of this path.
     pub fn confirm_nonexistence(&self, key_path: &KeyPath) -> Result<bool, KeyOutOfScope> {
-        self.in_scope(key_path).map(|_| {
-            self.terminal()
-                .as_ref()
-                .map_or(true, |d| &d.key_path != key_path)
-        })
+        // First check the the key_path is within the scope of the terminal
+        self.in_scope(&key_path)?;
+
+        match self.terminal() {
+            Some(leaf_data) if leaf_data.collision && collides(&leaf_data.key_path, key_path) => {
+                // UNWRAP: collision_data is expected to be Some if the terminal is a collisio leaf
+                let collision_data = self.collision_data.as_ref().unwrap();
+                Ok(collision_data
+                    .binary_search_by_key(&(key_path.len() as u16), |(k, _)| *k)
+                    .is_err())
+            }
+            Some(leaf_data) if leaf_data.collision => Ok(true),
+            Some(leaf_data) if &leaf_data.key_path == key_path => Ok(false),
+            Some(_) | None => Ok(true),
+        }
     }
 
     fn in_scope(&self, key_path: &KeyPath) -> Result<(), KeyOutOfScope> {
@@ -271,7 +342,6 @@ impl fmt::Debug for PathUpdate {
 ///
 /// Returns the root of the trie obtained after application of the given updates in the `paths`
 /// vector. In case the `paths` is empty, `prev_root` is returned.
-// TODO: adapt to FullPrefixSubstree handling
 pub fn verify_update<H: NodeHasher>(
     prev_root: Node,
     paths: &[PathUpdate],
@@ -330,8 +400,19 @@ pub fn verify_update<H: NodeHasher>(
             }
         };
 
-        // TODO: Handle Collisions
-        let ops = crate::update::leaf_ops_spliced(leaf, None, &ops).map(|(k, v)| (k, v, false));
+        let collision_ops = path.inner.collision_data.as_ref().map(|collision_data| {
+            collision_data
+                .iter()
+                .map(|(key_len, v)| {
+                    let mut key_path = leaf.as_ref().unwrap().key_path.clone();
+                    key_path.resize_with(*key_len as usize, || 0);
+                    (key_path, *v)
+                })
+                .collect()
+        });
+
+        let ops = crate::update::leaf_ops_spliced(leaf, collision_ops, &ops);
+        let ops = build_collision_subtries::<H>(ops);
         let sub_root = crate::update::build_trie::<H>(skip, ops, |_| {});
 
         let mut cur_node = sub_root;
@@ -362,8 +443,10 @@ pub fn verify_update<H: NodeHasher>(
 
             match (NodeKind::of::<H>(&cur_node), NodeKind::of::<H>(&sibling)) {
                 (NodeKind::Terminator, NodeKind::Terminator) => {}
-                (NodeKind::Leaf, NodeKind::Terminator) => {}
-                (NodeKind::Terminator, NodeKind::Leaf) => {
+                (NodeKind::Leaf, NodeKind::Terminator)
+                | (NodeKind::CollisionLeaf, NodeKind::Terminator) => {}
+                (NodeKind::Terminator, NodeKind::Leaf)
+                | (NodeKind::Terminator, NodeKind::CollisionLeaf) => {
                     // relocate sibling upwards.
                     cur_node = sibling;
                 }
