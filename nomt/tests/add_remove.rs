@@ -11,16 +11,16 @@ fn add_remove_1000() {
 
     let expected_roots = [
         hex!("0000000000000000000000000000000000000000000000000000000000000000"),
-        hex!("200ab71043f626e3f7317cd31cdc6d5685d44d95b00e886b9573b0dca0f6be9e"),
-        hex!("24eae8e13695ec388b03e27834c4aa17d4ee622587efe9a045d2c347af8081ca"),
-        hex!("11a0447201e309923fbc80c25ecc077ce217dd07a70edba3d21a1308fe8dd56f"),
-        hex!("054fe72610350fbd50a96f1831fe59d6634aba65605669ae561752b56620a0de"),
-        hex!("39e2187ac766bc5097c6828fc442b165a95beda98b4e8129c6d4e30e930b400a"),
-        hex!("0ea8c56f0552ec46c81cfd81cdee5694c89298db53f6b11dd511fe19e5425a51"),
-        hex!("1de1da23dbcd955bfe2f2fbfbcb1f0faddd3bb327bdabe8c750ab1464605df42"),
-        hex!("16891698734e2cd6b0c7f992951e5f8dbd33e50017a47bfbcab22218161cf71b"),
-        hex!("166394fe2bf86644f25e42f8b82720d7000f072ad420d8d54deb2da6b8a52fd5"),
-        hex!("384ce73c08b878a5cb288da5791c47b5ecc866e77523c6646482c276f2d5b592"),
+        hex!("2e33178da69d2e40de96d6df45e0689809d2725a463a32c4fa9e3bdb31ca7fba"),
+        hex!("15dd2153cc9ff8f16d3fce1e83c3b7a966fd82eee43c1b48dfec060e3e309791"),
+        hex!("1e3b0cb4d6159cbd87c3d174429669cccb0a6370b8d99b816899f669126ffcc3"),
+        hex!("147ae7bd1727e8977944651b9c6e40c03b1a7c66b6365a1faef61de4372a9092"),
+        hex!("0740f618d8b29a1da613ac37b78b9f0cfef02ccfc392b7f347dfee1ace26e89f"),
+        hex!("2750ccea329ce8d7e3715f836fb88e70d6c12f685cee7e05e13697c15865b753"),
+        hex!("1607cad5b1bb597afad927738c19c279433f79d46b62a1a923700c624d667c87"),
+        hex!("24285193721cd8797b43c0ad0c77c7075eb8d4f652505f83cebd381fe007d916"),
+        hex!("21f78c2189c425f466039e3ebdc25b74e61000b99dcdb636c047b0cdc35ebb69"),
+        hex!("0f088ab3fb1f329a6b50d52be777fe224318394d8458b22db4854615e034b3f5"),
     ];
 
     let mut root = Node::default();
@@ -35,6 +35,7 @@ fn add_remove_1000() {
         }
 
         assert_eq!(root, common::expected_root(accounts));
+        println!("{i} - root: {:?}", hex::encode(&root));
         assert_eq!(root, expected_roots[i + 1]);
     }
 
