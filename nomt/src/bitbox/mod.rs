@@ -15,7 +15,7 @@ use threadpool::ThreadPool;
 
 use crate::{
     io::{self, page_pool::FatPage, IoCommand, IoHandle, IoKind, PagePool, PAGE_SIZE},
-    page_cache::{Page, PageCache},
+    page_cache::{Page, PageCache, ELIDED_CHILDREN_RANGE, HASH_RANGE},
     store::{BucketInfo, DirtyPage},
     task::{join_task, spawn_task, TaskResult},
 };
@@ -493,9 +493,9 @@ fn recover(
                 page_diff.unpack_changed_nodes(&changed_nodes, &mut page);
 
                 // Label the page.
-                page[PAGE_SIZE - 8..].copy_from_slice(&page_id_hash.to_le_bytes());
+                page[HASH_RANGE].copy_from_slice(&page_id_hash.to_le_bytes());
                 // Write elided children bitfield.
-                page[PAGE_SIZE - 16..PAGE_SIZE - 8].copy_from_slice(&elided_children.to_bytes());
+                page[ELIDED_CHILDREN_RANGE].copy_from_slice(&elided_children.to_bytes());
 
                 ht_fd.write_all_at(&page, pn * PAGE_SIZE as u64)?;
             }
@@ -610,7 +610,7 @@ impl PageLoad {
         assert!(self.needs_completion());
 
         let expected_hash = self.probe_sequence.hash;
-        let hash = u64::from_le_bytes(page[PAGE_SIZE - 8..].try_into().unwrap());
+        let hash = u64::from_le_bytes(page[HASH_RANGE].try_into().unwrap());
 
         if hash == expected_hash {
             Some((page, BucketIndex(self.probe_sequence.bucket())))

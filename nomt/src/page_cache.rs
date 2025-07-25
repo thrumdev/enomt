@@ -7,6 +7,7 @@ use crate::{
     rw_pass_cell::{Region, RegionContains, RwPassDomain, WritePass},
     Options,
 };
+use bitvec::{order::Msb0, vec::BitVec, view::BitView};
 use fxhash::FxBuildHasher;
 use lru::LruCache;
 use nomt_core::{
@@ -15,12 +16,21 @@ use nomt_core::{
     trie::Node,
 };
 use parking_lot::{Mutex, RwLock};
-use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, ops::Range, sync::Arc};
 
 // Total number of nodes stored in one Page. It depends on the `DEPTH`
 // of the rootless sub-binary tree stored in a page following this formula:
 // (2^(DEPTH + 1)) - 2
 pub const NODES_PER_PAGE: usize = (1 << DEPTH + 1) - 2;
+
+// Tag used to distinguish Jump pages.
+pub const JUMP_TAG: [u8; 4] = *b"jump";
+
+pub const HASH_RANGE: Range<usize> = PAGE_SIZE - 8..PAGE_SIZE;
+pub const TAG_RANGE: Range<usize> = PAGE_SIZE - 12..PAGE_SIZE - 8;
+pub const ELIDED_CHILDREN_RANGE: Range<usize> = PAGE_SIZE - 20..PAGE_SIZE - 12;
+pub const JUMP_NODE_RANGE: Range<usize> = 0..32;
+pub const JUMP_PARTIAL_PATH_LEN_RANGE: Range<usize> = 32..34;
 
 fn read_node(data: &FatPage, index: usize) -> Node {
     assert!(index < NODES_PER_PAGE, "index out of bounds");
@@ -40,7 +50,7 @@ fn set_node(data: &mut FatPage, index: usize, node: Node) {
 
 fn read_elided_children(data: &FatPage) -> ElidedChildren {
     // UNWRAP: elided_children slice is 8 bytes long.
-    ElidedChildren::from_bytes(data[PAGE_SIZE - 16..PAGE_SIZE - 8].try_into().unwrap())
+    ElidedChildren::from_bytes(data[ELIDED_CHILDREN_RANGE].try_into().unwrap())
 }
 
 /// A mutable page.
@@ -50,7 +60,34 @@ pub struct PageMut {
 
 impl PageMut {
     pub fn label(&mut self, hash: u64) {
-        self.inner[PAGE_SIZE - 8..].copy_from_slice(&hash.to_le_bytes());
+        self.inner[HASH_RANGE].copy_from_slice(&hash.to_le_bytes());
+    }
+
+    pub fn tag_jump_page(&mut self, node: Node, partial_path: BitVec<u8, Msb0>) {
+        self.inner[TAG_RANGE].copy_from_slice(&JUMP_TAG);
+        self.inner[JUMP_NODE_RANGE].copy_from_slice(&node);
+        let partial_path_bit_len = partial_path.len() as u16;
+        let partial_path_byte_len = (partial_path_bit_len + 7) / 8;
+        self.inner[JUMP_PARTIAL_PATH_LEN_RANGE]
+            .copy_from_slice(&partial_path_bit_len.to_le_bytes());
+        let start = JUMP_PARTIAL_PATH_LEN_RANGE.end;
+        let end = JUMP_PARTIAL_PATH_LEN_RANGE.end + partial_path_byte_len as usize;
+        self.inner[start..end].view_bits_mut::<Msb0>()[..partial_path_bit_len as usize]
+            .copy_from_bitslice(&partial_path);
+    }
+
+    pub fn read_jump_page(&mut self) -> Option<(Node, BitVec<u8, Msb0>)> {
+        if self.inner[TAG_RANGE] != JUMP_TAG {
+            return None;
+        }
+        let mut node = [0; 32];
+        node.copy_from_slice(&self.inner[JUMP_NODE_RANGE]);
+        let partial_path_bit_len =
+            u16::from_le_bytes(self.inner[JUMP_PARTIAL_PATH_LEN_RANGE].try_into().unwrap());
+        let partial_path = self.inner[JUMP_PARTIAL_PATH_LEN_RANGE.end..].view_bits::<Msb0>()
+            [..partial_path_bit_len as usize]
+            .to_bitvec();
+        Some((node, partial_path))
     }
 
     /// Freeze the page.
@@ -96,7 +133,7 @@ impl PageMut {
 
     /// Write the bitfield representing which child page has been elided.
     pub fn set_elided_children(&mut self, elided_children: &ElidedChildren) {
-        self.inner[PAGE_SIZE - 16..PAGE_SIZE - 8].copy_from_slice(&elided_children.to_bytes());
+        self.inner[ELIDED_CHILDREN_RANGE].copy_from_slice(&elided_children.to_bytes());
     }
 }
 
