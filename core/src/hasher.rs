@@ -123,9 +123,15 @@ impl<H: BinaryHash> NodeHasher for BinaryHasher<H> {
     }
 
     fn hash_internal(data: &InternalData) -> [u8; 32] {
-        let mut h = H::hash2_32_concat(&data.left, &data.right);
-        set_msbs_by_node_kind(&mut h, NodeKind::Internal);
-        h
+        if data.left == TERMINATOR {
+            data.right
+        } else if data.right == TERMINATOR {
+            data.left
+        } else {
+            let mut h = H::hash2_32_concat(&data.left, &data.right);
+            set_msbs_by_node_kind(&mut h, NodeKind::Internal);
+            h
+        }
     }
 
     fn node_kind(node: &Node) -> NodeKind {
