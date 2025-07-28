@@ -1,7 +1,9 @@
 //! Trie update logic helpers.
 
 use crate::hasher::NodeHasher;
-use crate::trie::{self, KeyPath, LeafData, LeafDataRef, Node, ValueHash};
+use crate::trie::{
+    self, InternalData, KeyPath, LeafData, LeafDataRef, Node, ValueHash, TERMINATOR,
+};
 
 use bitvec::prelude::*;
 
@@ -126,6 +128,7 @@ pub enum WriteNode<'a> {
         node: Node,
     },
     Internal {
+        jump: usize,
         internal_data: trie::InternalData,
         node: Node,
     },
@@ -153,9 +156,16 @@ impl<'a> WriteNode<'a> {
     /// The node itself.
     pub fn node(&self) -> Node {
         match self {
-            WriteNode::Leaf { node, .. } => *node,
-            WriteNode::Internal { node, .. } => *node,
+            WriteNode::Leaf { node, .. } | WriteNode::Internal { node, .. } => *node,
             WriteNode::Terminator => trie::TERMINATOR,
+        }
+    }
+
+    /// How many steps to move up after writing the node.
+    pub fn jump(&self) -> usize {
+        match self {
+            WriteNode::Internal { jump, .. } => *jump,
+            _ => 0,
         }
     }
 }
@@ -274,7 +284,7 @@ pub fn build_trie<H: NodeHasher>(
             }
         };
 
-        let mut layer = leaf_depth;
+        let mut current_depth = leaf_depth;
         let mut last_node = leaf;
         let down_start = skip + n1.unwrap_or(0);
         let leaf_end_bit = skip + leaf_depth;
@@ -285,26 +295,86 @@ pub fn build_trie<H: NodeHasher>(
         }
 
         visit(WriteNode::Leaf {
-            up: n1.is_some(), // previous iterations always get to current layer + 1
+            up: n1.is_some(), // previous iterations always get to current current_depth + 1
             down: &bits[down_start..leaf_end_bit],
             node: leaf,
             leaf_data,
         });
 
-        for bit in bits[skip..leaf_end_bit]
-            .iter()
-            .by_vals()
-            .rev()
-            .take(hash_up_layers)
-        {
-            layer -= 1;
+        let target_depth = current_depth - hash_up_layers;
+        let mut last_internal = None;
 
-            let sibling = if pending_siblings.last().map_or(false, |l| l.1 == layer + 1) {
-                // unwrap: just checked
-                pending_siblings.pop().unwrap().0
-            } else {
-                trie::TERMINATOR
-            };
+        // Loop until we reached the target depth compacting up.
+        while current_depth != target_depth {
+            // next_depth cannot be smaller than the target, it could happen
+            // that pending siblings are higher within the subtree,
+            // higher than the next subtree that needs to be built.
+            let next_depth = std::cmp::max(
+                pending_siblings.last().map(|l| l.1).unwrap_or(target_depth),
+                target_depth,
+            );
+
+            let delta_depth = current_depth - next_depth;
+
+            if delta_depth > 0 {
+                // UNWRAP: A branch node and thus relative internal data must
+                // have been previously set.
+                let last_internal: trie::InternalData = last_internal.take().unwrap();
+                visit(WriteNode::Internal {
+                    jump: delta_depth,
+                    internal_data: last_internal.clone(),
+                    node: last_node,
+                });
+
+                // TODO: remove this once we start using effectively jumps
+                visit(WriteNode::Internal {
+                    jump: 0,
+                    internal_data: last_internal,
+                    node: last_node,
+                });
+
+                for i in 0..delta_depth {
+                    let bit = bits[skip + current_depth - i - 1];
+
+                    let internal_data = if bit {
+                        trie::InternalData {
+                            left: trie::TERMINATOR,
+                            right: last_node,
+                        }
+                    } else {
+                        trie::InternalData {
+                            left: last_node,
+                            right: trie::TERMINATOR,
+                        }
+                    };
+
+                    last_node = H::hash_internal(&internal_data);
+                    visit(WriteNode::Internal {
+                        jump: 0,
+                        internal_data: internal_data.clone(),
+                        node: last_node,
+                    });
+                }
+            } else if last_internal.is_some() {
+                // UNWRAP: TODO
+                let last_internal: trie::InternalData = last_internal.take().unwrap();
+                visit(WriteNode::Internal {
+                    jump: 0,
+                    internal_data: last_internal,
+                    node: last_node,
+                });
+            }
+
+            // No pending siblings in between the last node and the target.
+            if next_depth == target_depth {
+                current_depth = target_depth;
+                break;
+            }
+
+            // Hash up with the pending sibling.
+            // UNWRAP: if no pending siblings than next_depth is the same as target_depth
+            let (sibling, depth) = pending_siblings.pop().unwrap();
+            let bit = bits[skip + depth - 1];
 
             let internal_data = if bit {
                 trie::InternalData {
@@ -318,13 +388,20 @@ pub fn build_trie<H: NodeHasher>(
                 }
             };
 
+            last_internal.replace(internal_data.clone());
             last_node = H::hash_internal(&internal_data);
+            current_depth = next_depth.saturating_sub(1);
+        }
+
+        if let Some(internal_data) = last_internal.take() {
             visit(WriteNode::Internal {
+                jump: 0,
                 internal_data,
                 node: last_node,
             });
         }
-        pending_siblings.push((last_node, layer));
+
+        pending_siblings.push((last_node, current_depth));
 
         a = Some((this_key, this_val, this_collision));
         b = c;
@@ -372,10 +449,16 @@ mod tests {
         }
 
         fn hash_internal(data: &trie::InternalData) -> [u8; 32] {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&data.left);
-            hasher.update(&data.right);
-            let mut hash: [u8; 32] = hasher.finalize().into();
+            let mut hash = if data.left == TERMINATOR {
+                data.right
+            } else if data.right == TERMINATOR {
+                data.left
+            } else {
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(&data.left);
+                hasher.update(&data.right);
+                hasher.finalize().into()
+            };
 
             // Label with MSB
             hash[0] &= 0b00111111;
@@ -416,6 +499,7 @@ mod tests {
     struct Visited {
         key: BitVec<u8, Msb0>,
         visited: Vec<(BitVec<u8, Msb0>, Node)>,
+        visited_jumps: Vec<(BitVec<u8, Msb0>, usize, Node)>,
     }
 
     impl Visited {
@@ -423,10 +507,27 @@ mod tests {
             Visited {
                 key,
                 visited: Vec::new(),
+                visited_jumps: Vec::new(),
             }
         }
 
         fn visit(&mut self, control: WriteNode) {
+            if matches!(control, WriteNode::Internal{ jump, ..} if jump > 0) {
+                let n = self.key.len() - control.up() as usize;
+                let mut from_pos = self.key.clone();
+                from_pos.truncate(n);
+
+                let jump = control.jump() as usize;
+                let node = control.node();
+                self.visited_jumps.push((from_pos, jump, node));
+
+                // TODO: effetively truncate once jumps are used
+                //let n = self.key.len() - control.up() as usize - jump;
+                //self.key.truncate(n);
+                //self.key.extend_from_bitslice(&control.down());
+                return;
+            }
+
             let n = self.key.len() - control.up() as usize;
             self.key.truncate(n);
             self.key.extend_from_bitslice(&control.down());
@@ -479,11 +580,12 @@ mod tests {
 
         let root = build_trie::<DummyNodeHasher>(4, ops, |control| visited.visit(control));
 
+        let visited_jumps = visited.visited_jumps;
         let visited = visited.visited;
 
         let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b);
         let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c);
-        let root_branch_hash = branch_hash(branch_abc_hash, [0u8; 32]);
+        let root_branch_hash = branch_abc_hash;
 
         assert_eq!(
             visited,
@@ -492,9 +594,15 @@ mod tests {
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 0, 1], leaf_hash_b),
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 0], branch_ab_hash),
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 1], leaf_hash_c),
+                // TODO: remove once jumps are used
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0], branch_abc_hash),
                 (bitvec![u8, Msb0; 0, 0, 0, 1], root_branch_hash),
             ],
+        );
+
+        assert_eq!(
+            visited_jumps,
+            vec![(bitvec![u8, Msb0; 0, 0, 0, 1, 0], 1, branch_abc_hash),],
         );
 
         assert_eq!(root, root_branch_hash);
@@ -517,16 +625,15 @@ mod tests {
 
         let root = build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
 
+        let visited_jumps = visited.visited_jumps;
         let visited = visited.visited;
 
         let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b);
         let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c);
 
-        let branch_de_hash_1 = branch_hash(leaf_hash_d, leaf_hash_e);
-        let branch_de_hash_2 = branch_hash([0u8; 32], branch_de_hash_1);
-        let branch_de_hash_3 = branch_hash(branch_de_hash_2, [0u8; 32]);
+        let branch_de = branch_hash(leaf_hash_d, leaf_hash_e);
 
-        let branch_abc_de_hash = branch_hash(branch_abc_hash, branch_de_hash_3);
+        let branch_abc_de_hash = branch_hash(branch_abc_hash, branch_de);
 
         assert_eq!(
             visited,
@@ -538,11 +645,17 @@ mod tests {
                 (bitvec![u8, Msb0; 0], branch_abc_hash),
                 (bitvec![u8, Msb0; 1, 0, 1, 0], leaf_hash_d),
                 (bitvec![u8, Msb0; 1, 0, 1, 1], leaf_hash_e),
-                (bitvec![u8, Msb0; 1, 0, 1], branch_de_hash_1),
-                (bitvec![u8, Msb0; 1, 0], branch_de_hash_2),
-                (bitvec![u8, Msb0; 1], branch_de_hash_3),
+                // TODO: remove once jumps are used
+                (bitvec![u8, Msb0; 1, 0, 1], branch_de),
+                (bitvec![u8, Msb0; 1, 0], branch_de),
+                (bitvec![u8, Msb0; 1], branch_de),
                 (bitvec![u8, Msb0;], branch_abc_de_hash),
             ],
+        );
+
+        assert_eq!(
+            visited_jumps,
+            vec![(bitvec![u8, Msb0; 1, 0, 1], 2, branch_de),],
         );
 
         assert_eq!(root, branch_abc_de_hash);
@@ -569,5 +682,184 @@ mod tests {
         let k1 = vec![12, 56];
         let k2 = vec![12, 56, 0b00000001];
         assert_eq!(6, super::common_after_prefix(&k1, &k2, 17));
+    }
+
+    fn leaf_from_slice(key: &[u8]) -> (LeafData, [u8; 32]) {
+        let leaf = trie::LeafData {
+            key_path: key.to_vec(),
+            value_hash: [key[0]; 32],
+            collision: false,
+        };
+
+        let hash = DummyNodeHasher::hash_leaf(&leaf);
+        (leaf, hash)
+    }
+
+    #[test]
+    fn subtree_root_is_jump_node() {
+        let (leaf_a, leaf_hash_a) = leaf_from_slice(&[0b0001_0001, 0b0001_0000]);
+        let (leaf_b, leaf_hash_b) = leaf_from_slice(&[0b0001_0001, 0b0001_0001]);
+
+        let mut visited = Visited::at(bitvec![u8, Msb0;]);
+
+        let ops = [leaf_a, leaf_b]
+            .into_iter()
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
+            .collect::<Vec<_>>();
+
+        build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
+
+        let visited_jumps = visited.visited_jumps;
+
+        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        assert_eq!(visited_jumps.len(), 1);
+        assert_eq!(
+            visited_jumps[0].0,
+            bitvec![u8, Msb0; 0,0,0,1,0,0,0,1,0,0,0,1,0,0,0]
+        );
+        assert_eq!(visited_jumps[0].1, 15);
+        assert_eq!(visited_jumps[0].2, expected_jump_node);
+    }
+
+    #[test]
+    fn jumps_to_subtree_root() {
+        let (leaf_a, leaf_hash_a) =
+            leaf_from_slice(&[0b00100000, 0b00100000, 0b00000000, 0b00100000]);
+        let (leaf_b, leaf_hash_b) =
+            leaf_from_slice(&[0b00100000, 0b00100000, 0b00000000, 0b00100001]);
+        let (leaf_c, leaf_hash_c) =
+            leaf_from_slice(&[0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000]);
+        let (leaf_d, leaf_hash_d) =
+            leaf_from_slice(&[0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100001]);
+
+        let mut visited = Visited::at(bitvec![u8, Msb0;]);
+
+        let ops = [leaf_a, leaf_b, leaf_c, leaf_d]
+            .into_iter()
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
+            .collect::<Vec<_>>();
+
+        build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
+
+        let visited_jumps = visited.visited_jumps;
+
+        let jump_ab = branch_hash(leaf_hash_a, leaf_hash_b);
+        assert_eq!(visited_jumps.len(), 3);
+
+        assert_eq!(visited_jumps[0].0.len(), 31);
+        assert_eq!(visited_jumps[0].1, 12);
+        assert_eq!(visited_jumps[0].2, jump_ab);
+
+        let jump_cd = branch_hash(leaf_hash_c, leaf_hash_d);
+        assert_eq!(visited_jumps[1].0.len(), 39);
+        assert_eq!(visited_jumps[1].1, 20);
+        assert_eq!(visited_jumps[1].2, jump_cd);
+
+        let jump = branch_hash(jump_ab, jump_cd);
+        assert_eq!(visited_jumps[2].0.len(), 18);
+        assert_eq!(visited_jumps[2].1, 18);
+        assert_eq!(visited_jumps[2].2, jump);
+    }
+
+    #[test]
+    fn jump_node_in_subtree() {
+        let (leaf_a, leaf_hash_a) = leaf_from_slice(&[0b0001_0101, 0b1001_0000]);
+        let (leaf_b, leaf_hash_b) = leaf_from_slice(&[0b0001_0101, 0b1001_0001]);
+        let (leaf_c, _leaf_hash_c) = leaf_from_slice(&[0b1000_0000]);
+
+        let mut visited = Visited::at(bitvec![u8, Msb0;]);
+
+        let ops = [leaf_a, leaf_b, leaf_c]
+            .into_iter()
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
+            .collect::<Vec<_>>();
+
+        build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
+
+        let visited_jumps = visited.visited_jumps;
+
+        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        assert_eq!(visited_jumps.len(), 1);
+        assert_eq!(
+            visited_jumps[0].0,
+            bitvec![u8, Msb0; 0,0,0,1,0,1,0,1,1,0,0,1,0,0,0]
+        );
+        assert_eq!(visited_jumps[0].1, 14);
+        assert_eq!(visited_jumps[0].2, expected_jump_node);
+    }
+
+    #[test]
+    fn jump_nodes_in_subtree() {
+        let (leaf_a, leaf_hash_a) = leaf_from_slice(&[0b0001_0001, 0b0001_0000]);
+        let (leaf_b, leaf_hash_b) = leaf_from_slice(&[0b0001_0001, 0b0001_0001]);
+        let (leaf_c, leaf_hash_c) = leaf_from_slice(&[0b1000_0000, 0b1000_0000, 0b1000_0000]);
+        let (leaf_d, leaf_hash_d) = leaf_from_slice(&[0b1000_0000, 0b1000_0000, 0b1000_0001]);
+
+        let mut visited = Visited::at(bitvec![u8, Msb0;]);
+
+        let ops = [leaf_a, leaf_b, leaf_c, leaf_d]
+            .into_iter()
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
+            .collect::<Vec<_>>();
+
+        build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
+
+        let visited_jumps = visited.visited_jumps;
+
+        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        assert_eq!(visited_jumps.len(), 2);
+        assert_eq!(
+            visited_jumps[0].0,
+            bitvec![u8, Msb0; 0,0,0,1,0,0,0,1,0,0,0,1,0,0,0]
+        );
+        assert_eq!(visited_jumps[0].1, 14);
+        assert_eq!(visited_jumps[0].2, expected_jump_node);
+
+        let expected_jump_node = branch_hash(leaf_hash_c, leaf_hash_d);
+        assert_eq!(
+            visited_jumps[1].0,
+            bitvec![u8, Msb0; 1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0]
+        );
+        assert_eq!(visited_jumps[1].1, 22);
+        assert_eq!(visited_jumps[1].2, expected_jump_node);
+    }
+
+    #[test]
+    fn chain_of_jump_nodes_in_subtree() {
+        let (leaf_a, leaf_hash_a) =
+            leaf_from_slice(&[0b0001_0001, 0b0001_0000, 0b0001_0000, 0b0001_0000]);
+        let (leaf_b, leaf_hash_b) =
+            leaf_from_slice(&[0b0001_0001, 0b0001_0001, 0b0001_0000, 0b0001_0000]);
+        let (leaf_c, leaf_hash_c) =
+            leaf_from_slice(&[0b0001_0001, 0b0001_0001, 0b0001_0000, 0b0001_0001]);
+        let (leaf_d, _leaf_hash_d) = leaf_from_slice(&[0b1000_0000]);
+
+        let mut visited = Visited::at(bitvec![u8, Msb0;]);
+
+        let ops = [leaf_a, leaf_b, leaf_c, leaf_d]
+            .into_iter()
+            .map(|l| (l.key_path, l.value_hash, false /*collision*/))
+            .collect::<Vec<_>>();
+
+        build_trie::<DummyNodeHasher>(0, ops, |control| visited.visit(control));
+
+        let visited_jumps = visited.visited_jumps;
+
+        let jump_bc = branch_hash(leaf_hash_b, leaf_hash_c);
+        assert_eq!(visited_jumps.len(), 2);
+        assert_eq!(
+            visited_jumps[0].0,
+            bitvec![u8, Msb0; 0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0]
+        );
+        assert_eq!(visited_jumps[0].1, 15);
+        assert_eq!(visited_jumps[0].2, jump_bc);
+
+        let expected_jump = branch_hash(leaf_hash_a, jump_bc);
+        assert_eq!(
+            visited_jumps[1].0,
+            bitvec![u8, Msb0; 0,0,0,1,0,0,0,1,0,0,0,1,0,0,0]
+        );
+        assert_eq!(visited_jumps[1].1, 14);
+        assert_eq!(visited_jumps[1].2, expected_jump);
     }
 }
