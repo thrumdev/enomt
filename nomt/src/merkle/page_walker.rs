@@ -354,6 +354,11 @@ impl<H: NodeHasher> PageWalker<H> {
             let up = control.up();
             let mut down = control.down();
 
+            // TODO: do nothing with jump nodes for now, just be aware of them.
+            if matches!(control, WriteNode::Internal{ jump, ..} if jump > 0) {
+                return;
+            }
+
             if let WriteNode::Internal {
                 ref internal_data, ..
             } = control
@@ -378,10 +383,10 @@ impl<H: NodeHasher> PageWalker<H> {
                     self.position.sibling();
                     down = &down[1..];
                 } else {
-                    self.up();
+                    self.up(1);
                 }
             } else if up {
-                self.up()
+                self.up(1)
             }
 
             let fresh = self.position.depth() > start_position.depth();
@@ -418,11 +423,11 @@ impl<H: NodeHasher> PageWalker<H> {
     }
 
     // move the current position up.
-    fn up(&mut self) {
+    fn up(&mut self, layers: usize) {
         if self.position.depth_in_page() == 1 {
             self.handle_elision_threshold();
         }
-        self.position.up(1);
+        self.position.up(layers as u16);
     }
 
     // move the current position down, hinting whether the location is guaranteed to be fresh.
@@ -641,7 +646,7 @@ impl<H: NodeHasher> PageWalker<H> {
 
         for i in 0..compact_layers {
             let next_node = self.compact_step();
-            self.up();
+            self.up(1);
 
             if self.stack.is_empty() {
                 if self.parent_page.is_none() {
@@ -1858,7 +1863,6 @@ mod tests {
         let ops1 = vec![
             // [8] 2 leaves
             (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0], val(1),),
-            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1], val(2),),
         ];
 
         #[rustfmt::skip]
@@ -1878,10 +1882,16 @@ mod tests {
             (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1], val(8),),
         ];
 
+        #[rustfmt::skip]
+        let ops3 = vec![
+            // [8] 2 leaves
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1], val(2),),
+        ];
+
         walker.advance_and_replace(
             &page_set,
             TriePosition::new(),
-            [ops1.clone(), ops2.clone()].concat(),
+            [ops1.clone(), ops2.clone(), ops3.clone()].concat(),
         );
 
         let Output::Root(root, updates) = walker.conclude() else {
@@ -1893,8 +1903,13 @@ mod tests {
         let page_id = PageId::decode(&[8]).unwrap();
         let (page, _) = page_set.get(&page_id).unwrap();
         let position = trie_pos![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0];
-        let maybe_pages =
-            super::reconstruct_pages::<Blake3Hasher>(&page, page_id, position, &mut page_set, ops2);
+        let maybe_pages = super::reconstruct_pages::<Blake3Hasher>(
+            &page,
+            page_id,
+            position,
+            &mut page_set,
+            [ops1.clone(), ops2.clone()].concat(),
+        );
 
         if let Some(pages) = maybe_pages {
             for (page_id, page, diff, page_leaves_counter, children_leaves_counter) in pages {
