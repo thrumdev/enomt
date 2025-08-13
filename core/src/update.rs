@@ -325,36 +325,6 @@ pub fn build_trie<H: NodeHasher>(
                     internal_data: last_internal.clone(),
                     node: last_node,
                 });
-
-                // TODO: remove this once we start using effectively jumps
-                visit(WriteNode::Internal {
-                    jump: 0,
-                    internal_data: last_internal,
-                    node: last_node,
-                });
-
-                for i in 0..delta_depth {
-                    let bit = bits[skip + current_depth - i - 1];
-
-                    let internal_data = if bit {
-                        trie::InternalData {
-                            left: trie::TERMINATOR,
-                            right: last_node,
-                        }
-                    } else {
-                        trie::InternalData {
-                            left: last_node,
-                            right: trie::TERMINATOR,
-                        }
-                    };
-
-                    last_node = H::hash_internal(&internal_data);
-                    visit(WriteNode::Internal {
-                        jump: 0,
-                        internal_data: internal_data.clone(),
-                        node: last_node,
-                    });
-                }
             } else if last_internal.is_some() {
                 // UNWRAP: TODO
                 let last_internal: trie::InternalData = last_internal.take().unwrap();
@@ -521,10 +491,9 @@ mod tests {
                 let node = control.node();
                 self.visited_jumps.push((from_pos, jump, node));
 
-                // TODO: effetively truncate once jumps are used
-                //let n = self.key.len() - control.up() as usize - jump;
-                //self.key.truncate(n);
-                //self.key.extend_from_bitslice(&control.down());
+                let n = self.key.len() - control.up() as usize - jump;
+                self.key.truncate(n);
+                self.key.extend_from_bitslice(&control.down());
                 return;
             }
 
@@ -594,9 +563,6 @@ mod tests {
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 0, 1], leaf_hash_b),
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 0], branch_ab_hash),
                 (bitvec![u8, Msb0; 0, 0, 0, 1, 0, 1], leaf_hash_c),
-                // TODO: remove once jumps are used
-                (bitvec![u8, Msb0; 0, 0, 0, 1, 0], branch_abc_hash),
-                (bitvec![u8, Msb0; 0, 0, 0, 1], root_branch_hash),
             ],
         );
 
@@ -645,10 +611,6 @@ mod tests {
                 (bitvec![u8, Msb0; 0], branch_abc_hash),
                 (bitvec![u8, Msb0; 1, 0, 1, 0], leaf_hash_d),
                 (bitvec![u8, Msb0; 1, 0, 1, 1], leaf_hash_e),
-                // TODO: remove once jumps are used
-                (bitvec![u8, Msb0; 1, 0, 1], branch_de),
-                (bitvec![u8, Msb0; 1, 0], branch_de),
-                (bitvec![u8, Msb0; 1], branch_de),
                 (bitvec![u8, Msb0;], branch_abc_de_hash),
             ],
         );

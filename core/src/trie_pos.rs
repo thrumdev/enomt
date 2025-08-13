@@ -328,7 +328,7 @@ fn bottom_node_index(node_index: usize) -> u8 {
 }
 
 /// Given a node index, get the index of the sibling.
-fn sibling_index(node_index: usize) -> usize {
+pub fn sibling_index(node_index: usize) -> usize {
     if node_index % 2 == 0 {
         node_index + 1
     } else {

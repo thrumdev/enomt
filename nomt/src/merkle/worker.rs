@@ -256,7 +256,7 @@ fn update<H: HashAlgorithm>(
     }
 
     // PANIC: output is always root when no parent page is specified.
-    match root_page_updater.conclude() {
+    match root_page_updater.conclude(&page_set) {
         Output::Root(new_root, updates) => {
             output.updated_pages.extend(updates);
             output.root = Some(new_root);
@@ -423,7 +423,10 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
         batch_size: usize,
     ) {
         match ops {
-            None => self.page_walker.advance(seek_result.position.clone()),
+            None => self
+                .page_walker
+                .advance(seek_result.position.clone(), page_set),
+
             Some(ref ops) => {
                 let ops = nomt_core::update::leaf_ops_spliced(
                     seek_result.terminal.clone(),
@@ -549,7 +552,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
 
         // 2. conclude.
         // PANIC: walker was configured with a parent page.
-        let (new_nodes, updates) = match self.page_walker.conclude() {
+        let (new_nodes, updates) = match self.page_walker.conclude(page_set) {
             Output::ChildPageRoots(new_nodes, output_pages) => (new_nodes, output_pages),
             Output::Root(_, _) => unreachable!(),
         };

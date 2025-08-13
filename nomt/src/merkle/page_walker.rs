@@ -47,14 +47,14 @@ use nomt_core::{
     hasher::NodeHasher,
     page::DEPTH,
     page_id::{PageId, ROOT_PAGE_ID},
-    trie::{self, KeyPath, Node, NodeKind, ValueHash, TERMINATOR},
-    trie_pos::TriePosition,
+    trie::{self, InternalData, KeyPath, Node, NodeKind, ValueHash, TERMINATOR},
+    trie_pos::{sibling_index, TriePosition},
     update::WriteNode,
 };
 
 use crate::{
     merkle::{page_set::PageOrigin, BucketInfo, ElidedChildren, PAGE_ELISION_THRESHOLD},
-    page_cache::{Page, PageMut},
+    page_cache::{Page, PageMut, JUMP_NODE_RANGE},
     page_diff::PageDiff,
 };
 
@@ -90,7 +90,7 @@ pub struct UpdatedPage {
 }
 
 /// A page which was reconstructed by the page walker.
-struct ReconstructedPage {
+pub struct ReconstructedPage {
     /// The ID of the page.
     pub page_id: PageId,
     /// An owned copy of the page, including the modified nodes.
@@ -101,10 +101,54 @@ struct ReconstructedPage {
     pub diff: PageDiff,
 }
 
-/// A page that currently stays in the stack of the page walker.
-/// It contains not only data related to the page itself but also all
-/// information related to respecting the [`PAGE_ELISION_THRESHOLD`].
-struct StackPage {
+// TODO: This will be used by:
+// 1. While handling a traversed page, it could have an associated
+//   pending jump, implying the creation of a jump page
+// 2. While compacting up a pending jump could be made longer if the
+//    sibling of where the pending jump starts from is eliminated
+struct PendingJump {
+    /// Where the jump starts within the trie.
+    start: TriePosition,
+    /// Where the jump arrives within the trie.
+    destination: TriePosition,
+    /// The branch node.
+    node: Node,
+    /// The PageId of the jump page.
+    page_id: PageId,
+    /// A carry of the elision data brought
+    /// from the first proper page after the jumped one.
+    elision_data: ElisionData,
+}
+
+/// An item that currently stays in the stack of the page walker.
+enum StackPageItem {
+    /// A page which has being created by the page walker or which was
+    /// fetched from disk.
+    Page {
+        /// Data required to handle the page on disk.
+        data: StackPageData,
+        /// Data required to handle page elision.
+        elision_data: ElisionData,
+        /// Flag used to specify if a jump ended within this page and
+        /// it could continue from here
+        maybe_jump: Option<PendingJump>,
+    },
+    /// A pending page which is waiting to be consolidate and become
+    /// a proper page or to be part of a jump page. They can be created by
+    /// unpacking a jump page or while seeking down the trie to build new
+    /// subtrees.
+    Pending {
+        /// The ID of the pending page.
+        page_id: PageId,
+        /// Data required to handle page elision.
+        elision_data: ElisionData,
+        /// Pending node and its node index, they could be stored within
+        /// the page upon consolidation or used as jump node.
+        pending_node: Option<(Node, usize)>,
+    },
+}
+
+struct StackPageData {
     /// The ID of the page.
     page_id: PageId,
     /// An owned copy of the page, including the modified nodes.
@@ -112,8 +156,152 @@ struct StackPage {
     /// A compact diff indicating all modified slots in the page.
     diff: PageDiff,
     /// The bucket info associated with the page.
-    /// It can be None if the page was reconstructed.
+    /// It can be None if the page was reconstructed or just consolidated.
     bucket_info: Option<BucketInfo>,
+}
+
+impl StackPageItem {
+    fn new_page(page_id: PageId, page: PageMut, page_origin: PageOrigin) -> Self {
+        StackPageItem::Page {
+            elision_data: ElisionData {
+                elided_children: page.elided_children(),
+                page_leaves_counter: page_origin.page_leaves_counter(),
+                prev_children_leaves_counter: page_origin.children_leaves_counter(),
+                children_leaves_counter: None,
+                reconstruction_diff: page_origin.page_diff().cloned(),
+            },
+            data: StackPageData {
+                page_id,
+                page,
+                diff: PageDiff::default(),
+                bucket_info: page_origin.bucket_info(),
+            },
+            maybe_jump: None,
+        }
+    }
+
+    fn new_pending(page_id: PageId) -> Self {
+        StackPageItem::Pending {
+            page_id,
+            elision_data: ElisionData {
+                elided_children: ElidedChildren::new(),
+                page_leaves_counter: Some(0),
+                prev_children_leaves_counter: Some(0),
+                children_leaves_counter: Some(0),
+                reconstruction_diff: None,
+            },
+            pending_node: None,
+        }
+    }
+
+    fn page_id(&self) -> &PageId {
+        match self {
+            StackPageItem::Page {
+                data: StackPageData { page_id, .. },
+                ..
+            } => page_id,
+            StackPageItem::Pending { page_id, .. } => page_id,
+        }
+    }
+
+    fn elision_data_mut(&mut self) -> &mut ElisionData {
+        match self {
+            StackPageItem::Page { elision_data, .. } => elision_data,
+            StackPageItem::Pending { elision_data, .. } => elision_data,
+        }
+    }
+
+    fn page_data(self) -> Option<(StackPageData, ElisionData, Option<PendingJump>)> {
+        match self {
+            StackPageItem::Page {
+                data,
+                elision_data,
+                maybe_jump,
+            } => Some((data, elision_data, maybe_jump)),
+            _ => None,
+        }
+    }
+
+    fn page_data_ref(&self) -> Option<(&StackPageData, &ElisionData, Option<&PendingJump>)> {
+        match self {
+            StackPageItem::Page {
+                data,
+                elision_data,
+                maybe_jump,
+            } => Some((data, elision_data, maybe_jump.as_ref())),
+            _ => None,
+        }
+    }
+
+    fn page_data_mut(
+        &mut self,
+    ) -> Option<(
+        &mut StackPageData,
+        &mut ElisionData,
+        &mut Option<PendingJump>,
+    )> {
+        match self {
+            StackPageItem::Page {
+                data,
+                elision_data,
+                maybe_jump,
+            } => Some((data, elision_data, maybe_jump)),
+            _ => None,
+        }
+    }
+
+    fn consolidate(&mut self, page_set: &impl PageSet) {
+        match self {
+            StackPageItem::Pending {
+                page_id,
+                elision_data,
+                pending_node,
+            } => {
+                // Consolidating a pening page.
+                let mut page = page_set.fresh();
+                let mut diff = PageDiff::default();
+
+                // Set the pending node.
+                if let Some((node, node_index)) = pending_node.take() {
+                    let sibling_index = sibling_index(node_index);
+                    page.set_node(node_index, node);
+                    page.set_node(sibling_index, trie::TERMINATOR);
+                    diff.set_changed(node_index);
+                    diff.set_changed(sibling_index);
+                }
+
+                *self = StackPageItem::Page {
+                    data: StackPageData {
+                        page_id: page_id.clone(),
+                        page,
+                        diff,
+                        bucket_info: None,
+                    },
+                    elision_data: elision_data.clone(),
+                    maybe_jump: None,
+                };
+            }
+            // Do nothing if a page is already consolidated.
+            _ => (),
+        }
+    }
+}
+
+impl StackPageData {
+    /// Join both diffs associated with the reconstruction phase and
+    /// those involved in the update process.
+    fn total_diff(&self, elision_data: &ElisionData) -> PageDiff {
+        elision_data
+            .reconstruction_diff
+            .as_ref()
+            .map(|reconstruction_diff| reconstruction_diff.join(&self.diff))
+            .unwrap_or(self.diff.clone())
+    }
+}
+
+/// It contains all the data required to respect the [`PAGE_ELISION_THRESHOLD`].
+#[derive(Clone)]
+struct ElisionData {
     /// Store the number of leaves contained within the page. There must be at least two.
     /// This is not needed for non-reconstructed pages.
     page_leaves_counter: Option<u64>,
@@ -129,36 +317,6 @@ struct StackPage {
     /// A compact diff indicating all reconstructed slots in the page if the
     /// page was reconstructed.
     reconstruction_diff: Option<PageDiff>,
-}
-
-impl StackPage {
-    fn new<H: NodeHasher>(
-        page_id: PageId,
-        page: PageMut,
-        diff: PageDiff,
-        page_origin: PageOrigin,
-    ) -> Self {
-        Self {
-            elided_children: page.elided_children(),
-            page_leaves_counter: page_origin.page_leaves_counter(),
-            prev_children_leaves_counter: page_origin.children_leaves_counter(),
-            children_leaves_counter: None,
-            reconstruction_diff: page_origin.page_diff().cloned(),
-            bucket_info: page_origin.bucket_info(),
-            page_id,
-            page,
-            diff,
-        }
-    }
-
-    /// Join both diffs associated with the reconstruction phase and
-    /// those involved in the update process.
-    fn total_diff(&self) -> PageDiff {
-        self.reconstruction_diff
-            .as_ref()
-            .map(|reconstruction_diff| reconstruction_diff.join(&self.diff))
-            .unwrap_or(self.diff.clone())
-    }
 }
 
 /// A set of pages that the page walker draws upon.
@@ -185,7 +343,7 @@ pub struct PageWalker<H> {
     output_pages: Vec<PageWalkerPageOutput>,
 
     // the stack contains pages (ascending) which are descendants of the parent page, if any.
-    stack: Vec<StackPage>,
+    stack: Vec<StackPageItem>,
 
     // the sibling stack contains the previous node values of siblings on the path to the current
     // position, annotated with their depths.
@@ -260,7 +418,7 @@ impl<H: NodeHasher> PageWalker<H> {
     ) {
         if let Some(ref pos) = self.last_position {
             assert!(new_pos.path() > pos.path());
-            self.compact_up(Some(new_pos.clone()));
+            self.compact_up(Some(new_pos.clone()), page_set);
         }
         self.last_position = Some(new_pos.clone());
         self.build_stack(page_set, new_pos);
@@ -290,7 +448,7 @@ impl<H: NodeHasher> PageWalker<H> {
     ) {
         if let Some(ref pos) = self.last_position {
             assert!(new_pos.path() > pos.path());
-            self.compact_up(Some(new_pos.clone()));
+            self.compact_up(Some(new_pos.clone()), page_set);
         }
         self.last_position = Some(new_pos.clone());
         self.build_stack(page_set, new_pos);
@@ -303,10 +461,10 @@ impl<H: NodeHasher> PageWalker<H> {
     ///
     /// Panics if this falls in a page which is not a descendant of the parent page, if any.
     /// Panics if this is not greater than the previous trie position.
-    pub fn advance(&mut self, new_pos: TriePosition) {
+    pub fn advance(&mut self, new_pos: TriePosition, page_set: &impl PageSet) {
         if let Some(ref pos) = self.last_position {
             assert!(new_pos.path() > pos.path());
-            self.compact_up(Some(new_pos.clone()));
+            self.compact_up(Some(new_pos.clone()), page_set);
         }
 
         let page_id = new_pos.page_id();
@@ -347,17 +505,14 @@ impl<H: NodeHasher> PageWalker<H> {
         // Given the ops, build the required collision subtries and modify the ops
         // by inserting the collision subtries root as collision leaves.
         let ops = nomt_core::collisions::build_collision_subtries::<H>(ops.into_iter());
+        let ops: Vec<_> = ops.into_iter().collect();
 
         // replace sub-trie at the given position
         nomt_core::update::build_trie::<H>(self.position.depth() as usize, ops, |control| {
             let node = control.node();
             let up = control.up();
             let mut down = control.down();
-
-            // TODO: do nothing with jump nodes for now, just be aware of them.
-            if matches!(control, WriteNode::Internal{ jump, ..} if jump > 0) {
-                return;
-            }
+            let jump = control.jump();
 
             if let WriteNode::Internal {
                 ref internal_data, ..
@@ -365,6 +520,7 @@ impl<H: NodeHasher> PageWalker<H> {
             {
                 // we assume pages are not necessarily zeroed. therefore, there might be
                 // some garbage in the sibling slot we need to clear out.
+
                 let zero_sibling = if self.position.peek_last_bit() {
                     trie::is_terminator::<H>(&internal_data.left)
                 } else {
@@ -374,7 +530,7 @@ impl<H: NodeHasher> PageWalker<H> {
                 if zero_sibling {
                     self.set_sibling(trie::TERMINATOR);
                 }
-            };
+            }
 
             // avoid popping pages off the stack if we are jumping to a sibling.
             if up && !down.is_empty() {
@@ -383,10 +539,10 @@ impl<H: NodeHasher> PageWalker<H> {
                     self.position.sibling();
                     down = &down[1..];
                 } else {
-                    self.up(1);
+                    self.up(page_set);
                 }
             } else if up {
-                self.up(1)
+                self.up(page_set)
             }
 
             let fresh = self.position.depth() > start_position.depth();
@@ -408,55 +564,291 @@ impl<H: NodeHasher> PageWalker<H> {
                 self.root = node;
             } else {
                 self.set_node(node);
+                self.jump(jump, page_set);
             }
         });
+        assert_eq!(self.position, start_position);
 
         // build_trie should always return us to the original position.
         if !self.position.is_root() {
             assert_eq!(
-                self.stack.last().unwrap().page_id,
-                self.position.page_id().unwrap()
+                self.stack.last().unwrap().page_id(),
+                &self.position.page_id().unwrap()
             );
         } else {
             assert!(self.stack.is_empty());
         }
     }
 
-    // move the current position up.
-    fn up(&mut self, layers: usize) {
+    // Move the current position up.
+    fn up(&mut self, page_set: &impl PageSet) {
+        // Handle the popped stack top.
         if self.position.depth_in_page() == 1 {
-            self.handle_elision_threshold();
+            let Some(stack_page) = self.stack.pop() else {
+                // Nothing to handle.
+                return;
+            };
+
+            // UNWRAP: Only consolidated pages are expected at the top of the stack.
+            let (data, elision_data, maybe_jump) = stack_page.page_data().unwrap();
+            self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
         }
-        self.position.up(layers as u16);
+
+        self.position.up(1);
+    }
+
+    // Starting from pos and going up by the specified amount performing
+    // transparent hashes, thus copying the branch node from which it started.
+    //
+    // Make sure to jump pages if more than two sequential pages are created
+    // only by a transparent hash chain. Jumps do not introduce any new leaves,
+    // thus, elision data will simply be carried to higher pages, and the funcion
+    // will take care of savign jump pages and consolidating pages if needed.
+    fn jump(&mut self, mut up: usize, page_set: &impl PageSet) {
+        // If jump not required the current page could be
+        // a pending page and thus must be consolidated.
+        if up == 0 {
+            // UNWRAP: jump cannot be called on top of the root.
+            let stack_top = self.stack.last_mut().unwrap();
+            stack_top.consolidate(page_set);
+            return;
+        }
+
+        // The last step will not need a terminator sibling but just
+        // to set the branch node at the destination position.
+        up -= 1;
+
+        // The destination reached by the jump.
+        let mut destination_pos = self.position.clone();
+        destination_pos.up(up as u16);
+
+        // The jump can be divided into four steps:
+        // 1. Performing the hash up within the current page up to the first layer
+        // 2. Possibly creating jump pages if more than two were skipped
+        // 3. Performing the hash up within the destination page of the jump
+        // 3.1. If the destination is a pending page, it will be consolidated because
+        //      if the jump stopped there, it means that in the sibling subtree
+        //      of the destination, something different from a terminator node will be stored
+        // 3.2. If the destination is an already consolidated page, let's save the
+        //      information realted to the jump because from the destinatoin position
+        //      it could continue upwords, assuming the sibling subtree of the destination
+        //      is completely deleted.
+        // 4. Setting the last node, the start of the transparent hash.
+
+        // Step 1, transparent hash up within the current page.
+        let node;
+
+        // The jump stars from the last written node, which was written by the control
+        // function within the build_trie. The jump could start from:
+        // a proper page, where the node can be easily read, or from a pending page.
+        //
+        // In the first step, the possibilities are:
+        // 1. The jump starts from a page and ends within the same page
+        // 2. The jump starts from a page but ends on higher pages
+        // 3. The jump starts from a pending page
+        match self.stack.last() {
+            Some(StackPageItem::Page { .. }) => {
+                node = self.node();
+                let layer_in_page = self.position.depth_in_page() - 1;
+
+                // The sibling of the current position needs to be set before
+                // performing the first step of transparent hash up.
+                self.set_sibling(trie::TERMINATOR);
+
+                let hash_up_layers = std::cmp::min(up, layer_in_page);
+                self.transparent_hash_up(node, hash_up_layers);
+                up -= hash_up_layers;
+
+                if up == 0 && self.position.depth_in_page() != 1 {
+                    // First step, case 1, the transparent hash up
+                    // ends within the same page.
+                    self.position.up(1);
+                    self.set_node(node);
+                    return;
+                }
+
+                // First step, case 2
+            }
+            Some(StackPageItem::Pending {
+                pending_node: Some((pending_node, node_index)),
+                ..
+            }) if self.position.node_index() == *node_index => {
+                // First step, case 3, this pending page could be jumped
+                // or consolidated later on.
+                node = *pending_node;
+            }
+            // PANIC: a jump can only occur from a page or a pending page where the
+            // pending node was positioned in the current position.
+            _ => unreachable!(),
+        }
+
+        // Step two, check if the jump is large enough to cover more than two entire
+        // pages, if so, they will be compressed into one unique jump page.
+        // This step could have multiple scenarios:
+        // 1. The amount of covered pages is greater than two, thus, they will become
+        //    a single jump page, and the page elision data will be properly carried to the top page
+        // 2. Only one page is covered, thus, this page will be consolidated and filled with
+        //    the transparent hash up.
+        // 3. No pages are covered, leaving the job of filling the last page to the third step
+        let covered_pages = up / 6;
+
+        if covered_pages >= 2 {
+            // Step two, case 1
+            // TODO: substitute with jump pages
+            for _ in 0..covered_pages {
+                // NOTE: the position after the first step could be still on the first
+                // layer of the page that will be pop to continue the transparent hash
+                // on the parent page. Or differently the first step could have been
+                // skip being on top of pending page, thus requiring less than DEPTH
+                // hash up because the position is already at the last layer of the
+                // page that will be consolidated
+                let hash_up_layers;
+                if self.position.is_first_layer_in_page() {
+                    let stack_top = self.stack.pop().unwrap();
+                    let (data, elision_data, maybe_jump) = stack_top.page_data().unwrap();
+                    self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
+                    hash_up_layers = DEPTH;
+                } else {
+                    assert_eq!(self.position.depth_in_page(), DEPTH);
+                    hash_up_layers = DEPTH - 1;
+                }
+
+                // UNWRAP: the covered is expected to be present in the stack.
+                let stack_top = self.stack.last_mut().unwrap();
+                stack_top.consolidate(page_set);
+
+                self.transparent_hash_up(node, hash_up_layers);
+                up -= hash_up_layers;
+
+                assert!(self.position.is_first_layer_in_page());
+            }
+        } else if covered_pages == 1 {
+            // Step two, case 2
+
+            // NOTE: the position after the first step could still be on the first
+            // layer of the page, which will be popped to continue the transparent hash
+            // on the parent page. Alternatively, the first step could have been
+            // skipped if it is on top of the pending page, thus requiring less than
+            // DEPTH hash up, as the position is already at the last layer of the
+            // page that will be consolidated
+            let hash_up_layers;
+            if self.position.is_first_layer_in_page() {
+                let stack_top = self.stack.pop().unwrap();
+                let (data, elision_data, maybe_jump) = stack_top.page_data().unwrap();
+                self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
+                hash_up_layers = DEPTH;
+            } else {
+                assert_eq!(self.position.depth_in_page(), DEPTH);
+                hash_up_layers = DEPTH - 1;
+            }
+
+            // UNWRAP: the covered is expected to be present in the stack.
+            let stack_top = self.stack.last_mut().unwrap();
+            stack_top.consolidate(page_set);
+
+            self.transparent_hash_up(node, hash_up_layers);
+            up -= hash_up_layers;
+
+            assert!(self.position.is_first_layer_in_page());
+        } else {
+            // Step two, case 3. No pages covered, consolidate possible pending page.
+            // UNWRAP: A page for the jump destination is expected to exist.
+            let stack_top = self.stack.last_mut().unwrap();
+            stack_top.consolidate(page_set);
+        }
+
+        // Step three is the same as step one, just performed on the destinaton
+        // page instead of the starting page.
+        // Currently, the position is on the first layer of the last popped page.
+        // From here, the possibilities are:
+        // 1. The destination page is a proper page, it must be filled with the
+        // transparent hash up, up to the destination position, while saving the pending
+        // jump that could be made longer.
+        // 2. If the destination page is pending, it needs to be consolidated and then
+        // the same as case 1.
+        let hash_up_layers = up;
+
+        // Possibly pop the page if the jump did not move to the next page yet.
+        // TODO: this will probably require some more logic in the case of effectivly using jumps,
+        // where the PenidingJump will be stored already in the destination phase and this
+        // pop will not be required anymore. It sill needs to be performed in step two case 2 and 3.
+        if self.position.is_first_layer_in_page() {
+            // UNWRAP: root not reached thus pages are expected in the stack.
+            let stack_top = self.stack.pop().unwrap();
+            let (data, elision_data, maybe_jump) = stack_top.page_data().unwrap();
+            self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
+        }
+
+        // Early return if the third step does not require any hash up.
+        if hash_up_layers == 0 {
+            self.position.up(1);
+            if self.position.is_root() {
+                self.root = node;
+            } else {
+                // UNWRAP: the page where to place the last node is expected to exists.
+                let stack_top = self.stack.last_mut().unwrap();
+                stack_top.consolidate(page_set);
+                self.set_node(node)
+            }
+            return;
+        }
+
+        // UNWRAP: root not reached thus pages are expected in the stack.
+        let stack_top = self.stack.last_mut().unwrap();
+        stack_top.consolidate(page_set);
+
+        self.transparent_hash_up(node, hash_up_layers);
+
+        // Special case of storing the last node in the new page and possibly within the root,
+        // or store it in the current last page.
+        if self.position.is_first_layer_in_page() {
+            self.position.up(1);
+
+            // UNWRAP: root not reached thus pages are expected in the stack.
+            let stack_top = self.stack.pop().unwrap();
+            let (data, elision_data, maybe_jump) = stack_top.page_data().unwrap();
+            self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
+
+            match self.stack.last_mut() {
+                Some(new_stack_top) => {
+                    new_stack_top.consolidate(page_set);
+                    self.set_node(node);
+                }
+                None => {
+                    self.root = node;
+                }
+            };
+        } else {
+            self.position.up(1);
+            self.set_node(node);
+        }
+    }
+
+    fn transparent_hash_up(&mut self, node: Node, layers: usize) {
+        for _ in 0..layers {
+            self.position.up(1);
+            self.set_node(node);
+            self.set_sibling(trie::TERMINATOR);
+        }
     }
 
     // move the current position down, hinting whether the location is guaranteed to be fresh.
     fn down(&mut self, page_set: &impl PageSet, bit_path: &BitSlice<u8, Msb0>, fresh: bool) {
+        let mut new_pending = false;
         for bit in bit_path.iter().by_vals() {
             if self.position.is_root() {
-                let (page, page_origin) = if fresh {
-                    (
-                        page_set.fresh(),
-                        PageOrigin::Reconstructed {
-                            page_leaves_counter: 0,
-                            children_leaves_counter: 0,
-                            diff: PageDiff::default(),
-                        },
-                    )
+                let stack_item = if fresh {
+                    // Do not consolidate the root immediately
+                    StackPageItem::new_pending(ROOT_PAGE_ID)
                 } else {
                     // UNWRAP: all pages on the path to the node should be in the cache.
-                    page_set
+                    let (page, page_origin) = page_set
                         .get(&ROOT_PAGE_ID)
                         .map(|(p, b)| (p.deep_copy(), b))
-                        .unwrap()
+                        .unwrap();
+                    StackPageItem::new_page(ROOT_PAGE_ID, page, page_origin)
                 };
-
-                self.stack.push(StackPage::new::<H>(
-                    ROOT_PAGE_ID,
-                    page,
-                    PageDiff::default(),
-                    page_origin,
-                ));
+                self.stack.push(stack_item);
             } else if self.position.depth_in_page() == DEPTH {
                 // UNWRAP: the only legal positions are below the "parent" (root or parent_page)
                 //         and stack always contains all pages to position.
@@ -465,37 +857,33 @@ impl<H: NodeHasher> PageWalker<H> {
 
                 // UNWRAP: we never overflow the page stack.
                 let child_page_id = parent_stack_page
-                    .page_id
+                    .page_id()
                     .child_page_id(child_page_index.clone())
                     .unwrap();
 
-                let (page_id, page, diff, page_origin) = if fresh {
-                    let page = page_set.fresh();
-                    (
-                        child_page_id,
-                        page,
-                        PageDiff::default(),
-                        PageOrigin::Reconstructed {
-                            page_leaves_counter: 0,
-                            children_leaves_counter: 0,
-                            diff: PageDiff::default(),
-                        },
-                    )
+                let stack_item = if fresh {
+                    new_pending = true;
+                    StackPageItem::new_pending(child_page_id)
                 } else {
                     // UNWRAP: all pages on the path to the node should be in the cache.
-                    let (page, page_origin) = page_set.get(&child_page_id).unwrap();
-                    (
-                        child_page_id,
-                        page.deep_copy(),
-                        PageDiff::default(),
-                        page_origin,
-                    )
+                    let (page, page_origin) = page_set
+                        .get(&child_page_id)
+                        .map(|(p, b)| (p.deep_copy(), b))
+                        .unwrap();
+                    StackPageItem::new_page(child_page_id, page, page_origin)
                 };
-
-                self.stack
-                    .push(StackPage::new::<H>(page_id, page, diff, page_origin));
+                self.stack.push(stack_item);
             }
             self.position.down(bit);
+        }
+
+        // While going down and building the stack, we are sure that a position where a
+        // leaf will be placed is reached. Thus, if the last page in the stack is pending,
+        // it needs to be consolidated to allow the update to properly store nodes.
+        // Higher pages remain pending.
+        match self.stack.last_mut() {
+            Some(stack_top) if new_pending => stack_top.consolidate(page_set),
+            _ => (),
         }
     }
 
@@ -506,9 +894,9 @@ impl<H: NodeHasher> PageWalker<H> {
 
     /// Conclude walking and updating and return an output - either a new root, or a list
     /// of node changes to apply to the parent page.
-    pub fn conclude(mut self) -> Output {
+    pub fn conclude(mut self, page_set: &impl PageSet) -> Output {
         assert!(!self.reconstruction);
-        self.compact_up(None);
+        self.compact_up(None, page_set);
 
         // SAFETY: PageWlaker was initialized to not reconstruct pages.
         let updated_pages = self
@@ -590,7 +978,7 @@ impl<H: NodeHasher> PageWalker<H> {
         right_subtree_position.down(true);
         self.advance_and_replace(page_set, right_subtree_position, right_subtree_ops);
 
-        self.compact_up(None);
+        self.compact_up(None, page_set);
 
         // SAFETY: PageWlaker was initialized to only reconstruct pages.
         let reconstructed_pages = self
@@ -605,7 +993,7 @@ impl<H: NodeHasher> PageWalker<H> {
         Some((self.child_page_roots[0].1, reconstructed_pages))
     }
 
-    fn compact_up(&mut self, target_pos: Option<TriePosition>) {
+    fn compact_up(&mut self, target_pos: Option<TriePosition>, page_set: &impl PageSet) {
         // This serves as a check to see if we have anything to compact.
         if self.stack.is_empty() {
             return;
@@ -646,7 +1034,7 @@ impl<H: NodeHasher> PageWalker<H> {
 
         for i in 0..compact_layers {
             let next_node = self.compact_step();
-            self.up(1);
+            self.up(page_set);
 
             if self.stack.is_empty() {
                 if self.parent_page.is_none() {
@@ -718,44 +1106,72 @@ impl<H: NodeHasher> PageWalker<H> {
         let node_index = self.position.node_index();
         // UNWRAP: if a node is being read, then a page in the stack must be present.
         let stack_top = self.stack.last().unwrap();
-        stack_top.page.node(node_index)
+        // UNWRAP: reading node is expected to happen only from consoldiated pages.
+        let (data, _, _) = stack_top.page_data_ref().unwrap();
+        data.page.node(node_index)
     }
 
     // read the sibling node at the current position. panics if no current page.
     fn sibling_node(&self) -> Node {
         let node_index = self.position.sibling_index();
+
         // UNWRAP: if a sibling node is being read, then a page in the stack must be present.
         let stack_top = self.stack.last().unwrap();
-        stack_top.page.node(node_index)
+        // UNWRAP: reading node is expected to happen only from consoldiated pages.
+        let (data, _, _) = stack_top.page_data_ref().unwrap();
+
+        data.page.node(node_index)
     }
 
     // set a node in the current page at the given index. panics if no current page.
     fn set_node(&mut self, node: Node) {
         let node_index = self.position.node_index();
-        let sibling_node = self.sibling_node();
+        let sibling_node_index = self.position.sibling_index();
 
-        // UNWRAP: if a node is being set, then a page in the stack must be present.
+        // UNWRAP: if a sibling node is being written, then a page in the stack must be present.
         let stack_top = self.stack.last_mut().unwrap();
-        stack_top.page.set_node(node_index, node);
+        let (page_data, _) = match stack_top {
+            StackPageItem::Pending {
+                ref mut pending_node,
+                ..
+            } if pending_node.is_none() => {
+                // Special case of setting a node within a pending page,
+                // save this as pending node which will be stored on consolidation
+                // or will be used as jump node
+                *pending_node = Some((node, node_index));
+                return;
+            }
+            StackPageItem::Page {
+                data, elision_data, ..
+            } => (data, elision_data),
+            // PANIC: pending node in pending pages can be set only once.
+            _ => unreachable!(),
+        };
+
+        page_data.page.set_node(node_index, node);
+        let sibling_node = page_data.page.node(sibling_node_index);
 
         if self.position.is_first_layer_in_page()
             && node == TERMINATOR
             && sibling_node == TERMINATOR
         {
-            stack_top.diff.set_cleared();
+            page_data.diff.set_cleared();
         } else {
-            stack_top.diff.set_changed(node_index);
+            page_data.diff.set_changed(node_index);
         }
     }
 
     // set the sibling node in the current page at the given index. panics if no current page.
     fn set_sibling(&mut self, node: Node) {
         let node_index = self.position.sibling_index();
+
         // UNWRAP: if a sibling node is being set, then a page in the stack must be present.
         let stack_top = self.stack.last_mut().unwrap();
-        stack_top.page.set_node(node_index, node);
+        // UNWRAP: reading node is expected to happen only from consoldiated pages.
+        let (data, _, _) = stack_top.page_data_mut().unwrap();
 
-        stack_top.diff.set_changed(node_index);
+        data.page.set_node(node_index, node);
+        data.diff.set_changed(node_index);
     }
 
     fn assert_page_in_scope(&self, page_id: Option<&PageId>) {
@@ -781,7 +1197,14 @@ impl<H: NodeHasher> PageWalker<H> {
         self.position = position;
         let Some(page_id) = new_page_id else {
             while !self.stack.is_empty() {
-                self.handle_elision_threshold();
+                let Some(stack_page) = self.stack.pop() else {
+                    // Nothing to handle.
+                    return;
+                };
+
+                // UNWRAP: Only consolidated pages are expected at the top of the stack.
+                let (data, elision_data, maybe_jump) = stack_page.page_data().unwrap();
+                self.handle_traversed_page(data, elision_data, maybe_jump, page_set);
             }
             return;
         };
@@ -794,7 +1217,7 @@ impl<H: NodeHasher> PageWalker<H> {
         let target = self
             .stack
             .last()
-            .map(|item| item.page_id.clone())
+            .map(|item| item.page_id().clone())
             .or(self.parent_page.as_ref().map(|p| p.clone()));
 
         let start_len = self.stack.len();
@@ -804,12 +1227,9 @@ impl<H: NodeHasher> PageWalker<H> {
             // UNWRAP: all pages on the path to the terminal are present in the page set.
             let (page, page_origin) = page_set.get(&cur_ancestor).unwrap();
 
-            self.stack.push(StackPage::new::<H>(
-                cur_ancestor.clone(),
-                page.deep_copy(),
-                PageDiff::default(),
-                page_origin,
-            ));
+            let stack_item =
+                StackPageItem::new_page(cur_ancestor.clone(), page.deep_copy(), page_origin);
+            self.stack.push(stack_item);
             push_count += 1;
 
             // stop pushing once we reach the root page.
@@ -824,60 +1244,64 @@ impl<H: NodeHasher> PageWalker<H> {
         self.stack[start_len..start_len + push_count].reverse();
     }
 
-    fn handle_elision_threshold(&mut self) {
-        let Some(mut stack_page) = self.stack.pop() else {
-            // Nothing to handle.
-            return;
-        };
-
-        if stack_page.page_id != ROOT_PAGE_ID {
+    fn handle_traversed_page(
+        &mut self,
+        mut page_data: StackPageData,
+        elision_data: ElisionData,
+        _maybe_jump: Option<PendingJump>,
+        _page_set: &impl PageSet,
+    ) {
+        if page_data.page_id != ROOT_PAGE_ID {
             // Store the updated elided_children field into the page.
-            stack_page
+            page_data
                 .page
-                .set_elided_children(&stack_page.elided_children);
+                .set_elided_children(&elision_data.elided_children);
         }
 
-        let push_reconstructed = |output_pages: &mut Vec<_>, reconstructed: StackPage| {
+        let push_reconstructed = |output_pages: &mut Vec<_>,
+                                  reconstructed: StackPageData,
+                                  elision_data: &ElisionData| {
             output_pages.push(PageWalkerPageOutput::Reconstructed(ReconstructedPage {
-                diff: reconstructed.total_diff(),
+                diff: reconstructed.total_diff(&elision_data),
                 page_id: reconstructed.page_id,
                 page: reconstructed.page,
                 // UNWRAPs: If the page is being reconstructed, it must have its
                 // children_leaves_counter updated by a child page or from a previous
                 // children_leaves_counter state.
-                children_leaves_counter: reconstructed
+                children_leaves_counter: elision_data
                     .children_leaves_counter
-                    .unwrap_or(reconstructed.prev_children_leaves_counter.unwrap()),
+                    .unwrap_or(elision_data.prev_children_leaves_counter.unwrap()),
             }));
         };
 
-        let push_updated = |output_pages: &mut Vec<_>, updated: StackPage| {
-            output_pages.push(PageWalkerPageOutput::Updated(UpdatedPage {
-                diff: updated.total_diff(),
-                page_id: updated.page_id,
-                page: updated.page,
-                bucket_info: updated.bucket_info.unwrap_or(BucketInfo::Fresh),
-            }));
-        };
+        let push_updated =
+            |output_pages: &mut Vec<_>, updated: StackPageData, elision_data: &ElisionData| {
+                output_pages.push(PageWalkerPageOutput::Updated(UpdatedPage {
+                    diff: updated.total_diff(elision_data),
+                    page_id: updated.page_id,
+                    page: updated.page,
+                    bucket_info: updated.bucket_info.unwrap_or(BucketInfo::Fresh),
+                }));
+            };
 
         // If the stack is empty or the page is a child of the root,
         // elision and the carrying of elided children do not occur.
         // The stack could be empty if the page is the root page or one of its children,
         // and if the page is the last to be reconstructed.
-        if self.stack.is_empty() || stack_page.page_id.parent_page_id() == ROOT_PAGE_ID {
+        if self.stack.is_empty() || page_data.page_id.parent_page_id() == ROOT_PAGE_ID {
             if self.reconstruction {
-                push_reconstructed(&mut self.output_pages, stack_page);
+                push_reconstructed(&mut self.output_pages, page_data, &elision_data);
             } else {
-                push_updated(&mut self.output_pages, stack_page);
+                push_updated(&mut self.output_pages, page_data, &elision_data);
             }
             return;
         }
 
-        if let Some(children_leaves_counter) = stack_page
+        if let Some(children_leaves_counter) = elision_data
             .children_leaves_counter
-            .or(stack_page.prev_children_leaves_counter)
+            .or(elision_data.prev_children_leaves_counter)
         {
-            let page_leaves_counter = count_leaves::<H>(&stack_page.page);
+            let page_leaves_counter = count_leaves::<H>(&page_data.page);
 
             #[cfg(not(test))]
             let elide = page_leaves_counter + children_leaves_counter < PAGE_ELISION_THRESHOLD;
@@ -888,17 +1312,17 @@ impl<H: NodeHasher> PageWalker<H> {
             if elide {
                 // The total number of leaves in the subtree of this pages is lower than the threshold.
                 // UNWRAP: The stack has been checked to not be empty.
-                let parent_stack_page = self.stack.last_mut().unwrap();
+                let parent_stack_elision_data = self.stack.last_mut().unwrap().elision_data_mut();
 
-                if let Some(ref mut parent_children_leaves_counter) = parent_stack_page
+                if let Some(ref mut parent_children_leaves_counter) = parent_stack_elision_data
                     .children_leaves_counter
-                    .or(parent_stack_page.prev_children_leaves_counter)
+                    .or(parent_stack_elision_data.prev_children_leaves_counter)
                 {
-                    let prev_page_leaves_counter = stack_page.page_leaves_counter.unwrap_or(0);
+                    let prev_page_leaves_counter = elision_data.page_leaves_counter.unwrap_or(0);
                     let page_delta = page_leaves_counter as i64 - prev_page_leaves_counter as i64;
 
                     let prev_children_leaves_counter =
-                        stack_page.prev_children_leaves_counter.unwrap();
+                        elision_data.prev_children_leaves_counter.unwrap();
                     let children_delta =
                         children_leaves_counter as i64 - prev_children_leaves_counter as i64;
 
@@ -908,19 +1332,19 @@ impl<H: NodeHasher> PageWalker<H> {
                     // UNWRAP: page_delta and children_delta, if negative, will always be smaller than
                     // parent_children_leaves_counter. More leaves that what was previously present
                     // cannot be removed.
-                    parent_stack_page
+                    parent_stack_elision_data
                         .children_leaves_counter
                         .replace(new_parent_children_leaves_counter.try_into().unwrap());
                 }
 
                 // Elide current page from parent.
-                let page_id = &stack_page.page_id;
+                let page_id = &page_data.page_id;
 
                 // This will never underflow because page_id.depth() would be 0
                 // only if page_id is the root and it cannot happen because the stack
                 // would have been empty if the last stack item pop was the root.
                 let child_index = page_id.child_index_at_level(page_id.depth() - 1);
-                parent_stack_page
+                parent_stack_elision_data
                     .elided_children
                     .set_elide(child_index.clone(), true);
 
@@ -928,15 +1352,15 @@ impl<H: NodeHasher> PageWalker<H> {
                 // The bitfield needs to be present so that if, during the update phase, this page gets promoted
                 // to be stored on disk, we don't want to recompute which child is elided.
                 if self.reconstruction {
-                    push_reconstructed(&mut self.output_pages, stack_page);
+                    push_reconstructed(&mut self.output_pages, page_data, &elision_data);
                     return;
                 }
 
                 // If the page was previously resident in memory we need to clear it.
                 // While reconstructed pages do not need this.
-                if stack_page.bucket_info.is_some() {
-                    stack_page.diff.set_cleared();
-                    push_updated(&mut self.output_pages, stack_page);
+                if page_data.bucket_info.is_some() {
+                    page_data.diff.set_cleared();
+                    push_updated(&mut self.output_pages, page_data, &elision_data);
                 }
                 return;
             }
@@ -945,22 +1369,22 @@ impl<H: NodeHasher> PageWalker<H> {
         // If either `children_leaves_counter` and its previous value were already `None`
         // or the total number of leaves exceeded the threshold, this needs to be propagated.
         // UNWRAP: The stack has beed checked to not being empty.
-        let parent_stack_page = self.stack.last_mut().unwrap();
-        parent_stack_page.children_leaves_counter = None;
-        parent_stack_page.prev_children_leaves_counter = None;
+        let parent_stack_elision_data = self.stack.last_mut().unwrap().elision_data_mut();
+        parent_stack_elision_data.children_leaves_counter = None;
+        parent_stack_elision_data.prev_children_leaves_counter = None;
 
         // Toggle as not elide the current page from the parent page.
-        let page_id = &stack_page.page_id;
+        let page_id = &page_data.page_id;
         // It does not overflow for the same reason as above.
         let child_index = page_id.child_index_at_level(page_id.depth() - 1);
-        parent_stack_page
+        parent_stack_elision_data
             .elided_children
             .set_elide(child_index.clone(), false);
 
         if self.reconstruction {
-            push_reconstructed(&mut self.output_pages, stack_page);
+            push_reconstructed(&mut self.output_pages, page_data, &elision_data);
         } else {
-            push_updated(&mut self.output_pages, stack_page);
+            push_updated(&mut self.output_pages, page_data, &elision_data);
         }
     }
 }
@@ -1142,11 +1566,12 @@ mod tests {
     fn advance_backwards_panics() {
         let root = trie::TERMINATOR;
         let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+        let page_set = MockPageSet::default();
 
         let trie_pos_a = trie_pos![1];
         let trie_pos_b = trie_pos![0];
-        walker.advance(trie_pos_a);
-        walker.advance(trie_pos_b);
+        walker.advance(trie_pos_a, &page_set);
+        walker.advance(trie_pos_b, &page_set);
     }
 
     #[test]
@@ -1154,9 +1579,10 @@ mod tests {
     fn advance_same_panics() {
         let root = trie::TERMINATOR;
         let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+        let page_set = MockPageSet::default();
         let trie_pos_a = trie_pos![0];
-        walker.advance(trie_pos_a.clone());
-        walker.advance(trie_pos_a);
+        walker.advance(trie_pos_a.clone(), &page_set);
+        walker.advance(trie_pos_a, &page_set);
     }
 
     #[test]
@@ -1164,8 +1590,9 @@ mod tests {
     fn advance_to_parent_page_panics() {
         let root = trie::TERMINATOR;
         let mut walker = PageWalker::<Blake3Hasher>::new(root, Some(ROOT_PAGE_ID));
+        let page_set = MockPageSet::default();
         let trie_pos_a = trie_pos![0, 0, 0, 0, 0, 0];
-        walker.advance(trie_pos_a);
+        walker.advance(trie_pos_a, &page_set);
     }
 
     #[test]
@@ -1173,7 +1600,8 @@ mod tests {
     fn advance_to_root_with_parent_page_panics() {
         let root = trie::TERMINATOR;
         let mut walker = PageWalker::<Blake3Hasher>::new(root, Some(ROOT_PAGE_ID));
-        walker.advance(TriePosition::new());
+        let page_set = MockPageSet::default();
+        walker.advance(TriePosition::new(), &page_set);
     }
 
     #[test]
@@ -1193,7 +1621,7 @@ mod tests {
         );
 
         let trie_pos_b = trie_pos![0, 1];
-        walker.advance(trie_pos_b);
+        walker.advance(trie_pos_b, &page_set);
 
         let trie_pos_c = trie_pos![1];
         walker.advance_and_replace(
@@ -1202,7 +1630,7 @@ mod tests {
             vec![(key_path![1, 0], val(3)), (key_path![1, 1], val(4))],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(new_root, diffs) => {
                 assert_eq!(
                     new_root,
@@ -1241,7 +1669,7 @@ mod tests {
             ],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(_, updates) => {
                 page_set.apply(updates);
             }
@@ -1261,7 +1689,7 @@ mod tests {
             ],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(new_root, updates) => {
                 assert_eq!(
                     new_root,
@@ -1316,7 +1744,7 @@ mod tests {
             ],
         );
 
-        let new_root = match walker.conclude() {
+        let new_root = match walker.conclude(&page_set) {
             Output::Root(new_root, diffs) => {
                 page_set.apply(diffs);
                 new_root
@@ -1333,7 +1761,7 @@ mod tests {
         walker.advance_and_replace(&page_set, leaf_e_pos, vec![]);
         walker.advance_and_replace(&page_set, leaf_f_pos, vec![]);
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(new_root, diffs) => {
                 assert_eq!(
                     new_root,
@@ -1394,7 +1822,7 @@ mod tests {
             vec![(key_path![0, 0, 0, 0, 0, 1, 1], val(4))],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::ChildPageRoots(page_roots, diffs) => {
                 assert_eq!(page_roots.len(), 2);
                 assert_eq!(diffs.len(), 2);
@@ -1470,7 +1898,7 @@ mod tests {
                 ],
             );
 
-            match walker.conclude() {
+            match walker.conclude(&page_set) {
                 Output::Root(new_root, diffs) => {
                     page_set.apply(diffs);
                     new_root
@@ -1581,7 +2009,7 @@ mod tests {
             vec![(leaf_1, val(1)), (leaf_2, val(2))],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(_, diffs) => {
                 page_set.apply(diffs);
             }
@@ -1637,7 +2065,7 @@ mod tests {
                 ],
             );
 
-            match walker.conclude() {
+            match walker.conclude(&page_set) {
                 Output::Root(new_root, diffs) => {
                     page_set.apply(diffs);
                     new_root
@@ -1652,7 +2080,7 @@ mod tests {
         // Remove leaf B. This should clear page 2.
         walker.advance_and_replace(&page_set, leaf_b_pos, vec![]);
 
-        let root = match walker.conclude() {
+        let root = match walker.conclude(&page_set) {
             Output::Root(new_root, updates) => {
                 let diffs: HashMap<PageId, PageDiff> = updates
                     .iter()
@@ -1670,7 +2098,7 @@ mod tests {
         // Now removing leaf C will clear page 1 and the root page.
         walker.advance_and_replace(&page_set, leaf_c_pos, vec![]);
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(_new_root, updates) => {
                 let diffs: HashMap<PageId, PageDiff> = updates
                     .iter()
@@ -1715,7 +2143,7 @@ mod tests {
                 vec![(leaf_a_key_path, val(1)), (leaf_b_key_path, val(2))],
             );
 
-            let Output::Root(new_root, updates) = walker.conclude() else {
+            let Output::Root(new_root, updates) = walker.conclude(&page_set) else {
                 panic!();
             };
 
@@ -1748,7 +2176,7 @@ mod tests {
             vec![(leaf_c_key_path, val(3)), (leaf_d_key_path, val(4))],
         );
 
-        let Output::Root(_new_root, updates) = walker.conclude() else {
+        let Output::Root(_new_root, updates) = walker.conclude(&page_set) else {
             panic!();
         };
         // No page is expected to be cleared.
@@ -1786,7 +2214,7 @@ mod tests {
             ],
         );
 
-        match walker.conclude() {
+        match walker.conclude(&page_set) {
             Output::Root(_, diffs) => {
                 assert_eq!(diffs.len(), 1);
                 let n_leaves = super::count_leaves::<Blake3Hasher>(&diffs[0].page);
@@ -1815,7 +2243,7 @@ mod tests {
             ],
         );
 
-        let Output::Root(root, updates) = walker.conclude() else {
+        let Output::Root(root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
 
@@ -1847,7 +2275,7 @@ mod tests {
             ],
         );
 
-        let stack_top = walker.stack.last().unwrap();
+        let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
         assert_eq!(stack_top.children_leaves_counter, Some(9));
     }
 
@@ -1894,7 +2322,7 @@ mod tests {
             [ops1.clone(), ops2.clone(), ops3.clone()].concat(),
         );
 
-        let Output::Root(root, updates) = walker.conclude() else {
+        let Output::Root(root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
 
@@ -1962,9 +2390,10 @@ mod tests {
         #[rustfmt::skip]
         walker.advance(
             trie_pos![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1],
+            &page_set
         );
 
-        let stack_top = walker.stack.last().unwrap();
+        let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
         assert_eq!(stack_top.children_leaves_counter, Some(6));
     }
 
@@ -1999,7 +2428,7 @@ mod tests {
 
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
 
-        let Output::Root(root, updates) = walker.conclude() else {
+        let Output::Root(root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
         page_set.apply(updates);
@@ -2059,9 +2488,10 @@ mod tests {
         #[rustfmt::skip]
         walker.advance(
             trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+            &page_set
         );
 
-        let stack_top = walker.stack.last().unwrap();
+        let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
         assert_eq!(stack_top.children_leaves_counter, Some(10));
     }
 
@@ -2095,7 +2525,7 @@ mod tests {
 
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
 
-        let Output::Root(root, updates) = walker.conclude() else {
+        let Output::Root(root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
         page_set.apply(updates);
@@ -2147,9 +2577,10 @@ mod tests {
         #[rustfmt::skip]
         walker.advance(
             trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+            &page_set
         );
 
-        let stack_top = walker.stack.last().unwrap();
+        let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
         assert_eq!(stack_top.children_leaves_counter, Some(0));
     }
 
@@ -2174,14 +2605,14 @@ mod tests {
         let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
         walker.set_inhibit_elision();
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
-        let Output::Root(_root, mut correct_pages) = walker.conclude() else {
+        let Output::Root(_root, mut correct_pages) = walker.conclude(&page_set) else {
             unreachable!();
         };
 
         // Build pages in the first two layers.
         let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
-        let Output::Root(_root, updates) = walker.conclude() else {
+        let Output::Root(_root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
         assert_eq!(updates.len(), 2);
@@ -2268,7 +2699,7 @@ mod tests {
 
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
 
-        let Output::Root(_, updates) = walker.conclude() else {
+        let Output::Root(_, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
 
@@ -2318,7 +2749,7 @@ mod tests {
 
         walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
 
-        let Output::Root(_root, updates) = walker.conclude() else {
+        let Output::Root(_root, updates) = walker.conclude(&page_set) else {
             unreachable!();
         };
         let page = &updates[0].page;

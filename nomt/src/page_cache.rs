@@ -76,7 +76,7 @@ impl PageMut {
             .copy_from_bitslice(&partial_path);
     }
 
-    pub fn read_jump_page(&mut self) -> Option<(Node, BitVec<u8, Msb0>)> {
+    pub fn read_jump_page(&self) -> Option<(Node, BitVec<u8, Msb0>)> {
         if self.inner[TAG_RANGE] != JUMP_TAG {
             return None;
         }
