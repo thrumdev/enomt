@@ -20,6 +20,8 @@ pub enum WalEntry {
         /// Nodes that were changed by this update. The length of this array must be consistent with
         /// the number of ones in `page_diff`.
         changed_nodes: Vec<[u8; 32]>,
+        /// Wether the page is a jump page.
+        jump: bool,
         /// Bitfield representing which child page has been elided.
         elided_children: ElidedChildren,
         /// The bucket index which is being updated.
@@ -104,6 +106,7 @@ impl WalBlobReader {
                     changed_nodes.push(node);
                 }
 
+                let jump: bool = self.read_byte()? != 0;
                 let elided_children: [u8; 8] = self.read_buf()?;
                 let elided_children = ElidedChildren::from_bytes(elided_children);
                 let bucket = self.read_u64()?;
@@ -112,6 +115,7 @@ impl WalBlobReader {
                     page_id_hash,
                     page_diff,
                     changed_nodes,
+                    jump,
                     elided_children,
                     bucket,
                 }))
