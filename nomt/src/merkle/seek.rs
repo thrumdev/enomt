@@ -7,12 +7,14 @@ use crate::{
         ValueChange,
     },
     io::{CompleteIo, FatPage, IoHandle},
+    merkle::divergence_bit,
     page_cache::{Page, PageCache, PageMut},
     store::{BucketIndex, PageLoad, PageLoader},
     HashAlgorithm,
 };
 
 use super::{
+    jump_page_destination,
     page_set::{PageOrigin, PageSet},
     page_walker::PageSet as _,
     BucketInfo, LiveOverlay, PAGE_ELISION_THRESHOLD,
@@ -138,6 +140,11 @@ impl SeekRequest {
 
         self.page_id = Some(page_id.clone());
 
+        if page.jump() {
+            self.continue_seek_over_jump::<H>(page, record_siblings);
+            return;
+        }
+
         // take enough bits to get us to the end of this page.
 
         // If key_path_bits.len() is smaller than self.position.depth,
@@ -209,6 +216,56 @@ impl SeekRequest {
                 page.clone(),
             );
             self.continue_leaves_fetch::<H>(Some(page_set), overlay, None);
+        }
+    }
+
+    fn continue_seek_over_jump<H: HashAlgorithm>(&mut self, page: &Page, record_siblings: bool) {
+        let Some((jump_node, partial_path)) = page.jump_data() else {
+            // PANIC: continue_seek_over_jump expectes jump data to be presen
+            panic!()
+        };
+
+        let key_path_bits = self.key.view_bits::<Msb0>();
+        let start = std::cmp::min(self.position.depth() as usize, key_path_bits.len());
+        let key_path_bits = &key_path_bits[start..];
+
+        // `partial_path` is the path represented by the jump page,
+        // the current `key_path` needs to be compared with the jump `partial_path`.
+        // They can be the same, allowing the seeker to jump directly to the destination
+        // page, or they could diverge, implying the reach of a terminator node.
+        if let Some(divergence_bit_idx) = divergence_bit(&partial_path, key_path_bits) {
+            for idx in 0..=divergence_bit_idx {
+                self.position
+                    .down(key_path_bits.get(idx).map(|b| *b).unwrap_or(false));
+            }
+
+            if record_siblings {
+                self.siblings
+                    .extend(std::iter::repeat(trie::TERMINATOR).take(divergence_bit_idx));
+                self.siblings.push(jump_node);
+            }
+
+            self.state = RequestState::Completed(None);
+            return;
+        }
+
+        // Advace position and page id accordingly to the partial path.
+        //
+        // Save the parent of the destination because the child will be computed later
+        // while computing the next query to perform.
+        //
+        // UNWRAP: A jump page is being traversed, thus,
+        // a page ID is expected to be present.
+        self.page_id = jump_page_destination(self.page_id.take().unwrap(), &partial_path)
+            .map(|destination| destination.parent_page_id());
+
+        if record_siblings {
+            self.siblings
+                .extend(std::iter::repeat(trie::TERMINATOR).take(partial_path.len()));
+        }
+
+        for bit in partial_path {
+            self.position.down(bit);
         }
     }
 
