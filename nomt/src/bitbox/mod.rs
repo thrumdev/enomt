@@ -15,7 +15,7 @@ use threadpool::ThreadPool;
 
 use crate::{
     io::{self, page_pool::FatPage, IoCommand, IoHandle, IoKind, PagePool, PAGE_SIZE},
-    page_cache::{Page, PageCache, ELIDED_CHILDREN_RANGE, HASH_RANGE},
+    page_cache::{Page, PageCache, ELIDED_CHILDREN_RANGE, HASH_RANGE, JUMP_TAG, TAG_RANGE},
     store::{BucketInfo, DirtyPage},
     task::{join_task, spawn_task, TaskResult},
 };
@@ -253,6 +253,7 @@ impl DB {
                     dirty_page
                         .diff
                         .pack_changed_nodes(dirty_page.page.page_data()),
+                    dirty_page.diff.jump(),
                     dirty_page.page.elided_children(),
                     bucket,
                 );
@@ -463,6 +464,7 @@ fn recover(
                 page_id_hash,
                 page_diff,
                 changed_nodes,
+                jump,
                 elided_children,
                 bucket,
             } => {
@@ -492,8 +494,12 @@ fn recover(
                 }
                 page_diff.unpack_changed_nodes(&changed_nodes, &mut page);
 
-                // Label the page.
+                // Label the page with its hash.
                 page[HASH_RANGE].copy_from_slice(&page_id_hash.to_le_bytes());
+                if jump {
+                    // Label the page as jump.
+                    page[TAG_RANGE].copy_from_slice(&JUMP_TAG);
+                }
                 // Write elided children bitfield.
                 page[ELIDED_CHILDREN_RANGE].copy_from_slice(&elided_children.to_bytes());
 

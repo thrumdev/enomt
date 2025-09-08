@@ -31,6 +31,7 @@ pub const TAG_RANGE: Range<usize> = PAGE_SIZE - 12..PAGE_SIZE - 8;
 pub const ELIDED_CHILDREN_RANGE: Range<usize> = PAGE_SIZE - 20..PAGE_SIZE - 12;
 pub const JUMP_NODE_RANGE: Range<usize> = 0..32;
 pub const JUMP_PARTIAL_PATH_LEN_RANGE: Range<usize> = 32..34;
+pub const JUMP_PARTIAL_PATH_BYTE_START: usize = 34;
 
 fn read_node(data: &FatPage, index: usize) -> Node {
     assert!(index < NODES_PER_PAGE, "index out of bounds");
@@ -53,6 +54,20 @@ fn read_elided_children(data: &FatPage) -> ElidedChildren {
     ElidedChildren::from_bytes(data[ELIDED_CHILDREN_RANGE].try_into().unwrap())
 }
 
+fn read_jump_data(data: &FatPage) -> Option<(Node, BitVec<u8, Msb0>)> {
+    if data[TAG_RANGE] != JUMP_TAG {
+        return None;
+    }
+    let mut node = [0; 32];
+    node.copy_from_slice(&data[JUMP_NODE_RANGE]);
+    let partial_path_bit_len =
+        u16::from_le_bytes(data[JUMP_PARTIAL_PATH_LEN_RANGE].try_into().unwrap());
+    let partial_path = data[JUMP_PARTIAL_PATH_BYTE_START..].view_bits::<Msb0>()
+        [..partial_path_bit_len as usize]
+        .to_bitvec();
+    Some((node, partial_path))
+}
+
 /// A mutable page.
 pub struct PageMut {
     inner: FatPage,
@@ -64,30 +79,21 @@ impl PageMut {
     }
 
     pub fn tag_jump_page(&mut self, node: Node, partial_path: BitVec<u8, Msb0>) {
-        self.inner[TAG_RANGE].copy_from_slice(&JUMP_TAG);
+        self.set_jump_tag(true);
         self.inner[JUMP_NODE_RANGE].copy_from_slice(&node);
         let partial_path_bit_len = partial_path.len() as u16;
         let partial_path_byte_len = (partial_path_bit_len + 7) / 8;
         self.inner[JUMP_PARTIAL_PATH_LEN_RANGE]
             .copy_from_slice(&partial_path_bit_len.to_le_bytes());
-        let start = JUMP_PARTIAL_PATH_LEN_RANGE.end;
-        let end = JUMP_PARTIAL_PATH_LEN_RANGE.end + partial_path_byte_len as usize;
+        let start = JUMP_PARTIAL_PATH_BYTE_START;
+        let end = JUMP_PARTIAL_PATH_BYTE_START + partial_path_byte_len as usize;
         self.inner[start..end].view_bits_mut::<Msb0>()[..partial_path_bit_len as usize]
             .copy_from_bitslice(&partial_path);
     }
 
-    pub fn read_jump_page(&mut self) -> Option<(Node, BitVec<u8, Msb0>)> {
-        if self.inner[TAG_RANGE] != JUMP_TAG {
-            return None;
-        }
-        let mut node = [0; 32];
-        node.copy_from_slice(&self.inner[JUMP_NODE_RANGE]);
-        let partial_path_bit_len =
-            u16::from_le_bytes(self.inner[JUMP_PARTIAL_PATH_LEN_RANGE].try_into().unwrap());
-        let partial_path = self.inner[JUMP_PARTIAL_PATH_LEN_RANGE.end..].view_bits::<Msb0>()
-            [..partial_path_bit_len as usize]
-            .to_bitvec();
-        Some((node, partial_path))
+    fn set_jump_tag(&mut self, jump: bool) {
+        let tag = if jump { &JUMP_TAG } else { &[0; 4] };
+        self.inner[TAG_RANGE].copy_from_slice(tag);
     }
 
     /// Freeze the page.
@@ -106,8 +112,9 @@ impl PageMut {
         let mut page = PageMut {
             inner: page_pool.alloc_fat_page(),
         };
-        // No garbage in the elided children bitfield.
+        // No garbage in the elided children bitfield and jump tag.
         page.set_elided_children(&ElidedChildren::new());
+        page.set_jump_tag(false);
         page
     }
 
@@ -129,6 +136,16 @@ impl PageMut {
     /// Read out the bitfield representing which child page has been elided.
     pub fn elided_children(&self) -> ElidedChildren {
         read_elided_children(&self.inner)
+    }
+
+    /// Returns if the page is a jump page.
+    pub fn jump(&self) -> bool {
+        self.inner[TAG_RANGE] == JUMP_TAG
+    }
+
+    /// Returns the node and the partial path if this is a jump page.
+    pub fn jump_data(&self) -> Option<(Node, BitVec<u8, Msb0>)> {
+        read_jump_data(&self.inner)
     }
 
     /// Write the bitfield representing which child page has been elided.
@@ -160,6 +177,16 @@ impl Page {
     /// Read out the bitfield representing which child page has been elided.
     pub fn elided_children(&self) -> ElidedChildren {
         read_elided_children(&self.inner)
+    }
+
+    /// Returns if the page is a jump page.
+    pub fn jump(&self) -> bool {
+        self.inner[TAG_RANGE] == JUMP_TAG
+    }
+
+    /// Returns the node and the partial path if this is a jump page.
+    pub fn jump_data(&self) -> Option<(Node, BitVec<u8, Msb0>)> {
+        read_jump_data(&self.inner)
     }
 
     /// Create a mutable deep copy of this page.
