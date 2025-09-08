@@ -35,7 +35,6 @@ fn add_remove_1000() {
         }
 
         assert_eq!(root, common::expected_root(accounts));
-        println!("{i} - root: {:?}", hex::encode(&root));
         assert_eq!(root, expected_roots[i + 1]);
     }
 
