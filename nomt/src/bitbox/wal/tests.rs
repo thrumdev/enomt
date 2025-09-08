@@ -23,6 +23,7 @@ fn test_write_read() {
         ))
         .unwrap(),
         vec![].into_iter(),
+        false,
         ElidedChildren::new(),
         0,
     );
@@ -34,6 +35,7 @@ fn test_write_read() {
         ))
         .unwrap(),
         vec![[1; 32]].into_iter(),
+        true,
         ElidedChildren::from_bytes([1, 0, 0, 0, 0, 0, 0, 0]),
         1,
     );
@@ -47,6 +49,7 @@ fn test_write_read() {
             diff
         },
         (0..126).map(|x| [x; 32]),
+        false,
         ElidedChildren::from_bytes([2, 0, 0, 0, 0, 0, 0, 0]),
         2,
     );
@@ -68,6 +71,7 @@ fn test_write_read() {
             page_id_hash: 0,
             page_diff: PageDiff::default(),
             changed_nodes: vec![],
+            jump: false,
             elided_children: ElidedChildren::new(),
             bucket: 0,
         })
@@ -86,6 +90,7 @@ fn test_write_read() {
                 diff
             },
             changed_nodes: vec![[1; 32]],
+            jump: true,
             elided_children: ElidedChildren::from_bytes([1, 0, 0, 0, 0, 0, 0, 0]),
             bucket: 1,
         })
@@ -102,6 +107,7 @@ fn test_write_read() {
                 diff
             },
             changed_nodes: (0..126).map(|x| [x; 32]).collect(),
+            jump: false,
             elided_children: ElidedChildren::from_bytes([2, 0, 0, 0, 0, 0, 0, 0]),
             bucket: 2,
         })

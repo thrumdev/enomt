@@ -1,6 +1,7 @@
-use crate::page_cache::NODES_PER_PAGE;
+use crate::page_cache::{JUMP_PARTIAL_PATH_BYTE_START, NODES_PER_PAGE};
 
 const CLEAR_BIT: u64 = 1 << 63;
+const JUMP_BIT: u64 = 1 << 62;
 
 /// A bitfield tracking which nodes have changed within a page.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -10,7 +11,7 @@ pub struct PageDiff {
     /// There are only effectively [`NODES_PER_PAGE`] (126) nodes per page. The last two bits are
     /// reserved.
     ///
-    /// See [`CLEAR_BIT`].
+    /// See [`CLEAR_BIT`] and [`JUMP_BIT`].
     changed_nodes: [u64; 2],
 }
 
@@ -29,6 +30,32 @@ impl PageDiff {
             return None;
         }
         Some(diff)
+    }
+
+    /// Create a new page diff from the partial path length of a jump page.
+    pub fn from_jump_page(partial_path_bit_len: usize) -> Self {
+        // The nodes touched by a jump page are made by a constant amount related
+        // to the jump data and the ones used to store the effective partial path.
+        // This is conservative, going to tag as diff possibly even one node more
+        // than required.
+        const JUMP_DATA_NODES: usize = (JUMP_PARTIAL_PATH_BYTE_START + 31) / 32;
+        let partial_path_byte_len = (partial_path_bit_len + 7) / 8;
+        let occupied_nodes = (partial_path_byte_len + 31) / 32;
+
+        let mut changed_nodes = [0u64; 2];
+        changed_nodes[0] = (1 << JUMP_DATA_NODES + occupied_nodes) - 1;
+
+        PageDiff { changed_nodes }
+    }
+
+    /// Set the page diff to represent a jump page.
+    pub fn set_jump(&mut self) {
+        self.changed_nodes[1] |= JUMP_BIT;
+    }
+
+    /// Whether the page is a jump page.
+    pub fn jump(&self) -> bool {
+        self.changed_nodes[1] & JUMP_BIT == JUMP_BIT
     }
 
     /// Note that some 32-byte slot in the page data has changed.
@@ -144,7 +171,10 @@ impl Iterator for FastIterOnes {
 #[cfg(test)]
 mod tests {
     use super::PageDiff;
-    use crate::page_cache::NODES_PER_PAGE;
+    use crate::{
+        page_cache::{JUMP_PARTIAL_PATH_BYTE_START, NODES_PER_PAGE},
+        page_diff::JUMP_BIT,
+    };
 
     #[test]
     fn ensure_cap() {
@@ -180,5 +210,56 @@ mod tests {
         // Make sure that setting a node as changed zeros out the clear bit
         diff.set_changed(0);
         assert!(!diff.cleared());
+    }
+
+    #[test]
+    fn jump_bit() {
+        let diff = PageDiff::default();
+        assert!(!diff.jump());
+
+        let n_32_bytes_chunks = (JUMP_PARTIAL_PATH_BYTE_START + 31) / 32;
+
+        let check_jump_page_diff = |diff: PageDiff, expected_occupied_nodes: usize| {
+            assert!(diff.jump());
+
+            let total_occupied_nodes = n_32_bytes_chunks + expected_occupied_nodes;
+            for idx in 0..total_occupied_nodes {
+                assert!(diff.changed(idx));
+            }
+
+            for idx in total_occupied_nodes..64 {
+                if idx != JUMP_BIT as usize {
+                    assert!(!diff.changed(dbg!(idx)));
+                }
+            }
+        };
+
+        // 1 bit long paritial path
+        let mut jump_diff = PageDiff::from_jump_page(1);
+        jump_diff.set_jump();
+
+        check_jump_page_diff(jump_diff, 1);
+
+        // 8 bit long paritial path
+        let mut jump_diff = PageDiff::from_jump_page(8);
+        jump_diff.set_jump();
+        check_jump_page_diff(jump_diff, 1);
+
+        // 32 * 8 bit long paritial path
+        let mut jump_diff = PageDiff::from_jump_page(32 * 8);
+        jump_diff.set_jump();
+        check_jump_page_diff(jump_diff, 1);
+
+        // 32 * 8 + 1 bit long paritial path
+        let mut jump_diff = PageDiff::from_jump_page(32 * 8 + 1);
+        jump_diff.set_jump();
+        check_jump_page_diff(jump_diff, 2);
+
+        // 31 changes by 32 byte each by 8 bits each + some other bits
+        // should result in the maximum amount of changes given a key
+        // big as most 1KiB
+        let mut jump_diff = PageDiff::from_jump_page(31 * 32 * 8 + 9);
+        jump_diff.set_jump();
+        check_jump_page_diff(jump_diff, 32);
     }
 }

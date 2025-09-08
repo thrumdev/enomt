@@ -99,6 +99,7 @@ impl WalBlobBuilder {
         page_id_hash: u64,
         page_diff: &PageDiff,
         changed: impl Iterator<Item = [u8; 32]>,
+        jump: bool,
         elided_children: ElidedChildren,
         bucket_index: u64,
     ) {
@@ -110,6 +111,7 @@ impl WalBlobBuilder {
             for changed in changed {
                 self.write(&changed);
             }
+            self.write_byte(jump as u8);
             self.write(&elided_children.to_bytes());
             self.write(&bucket_index.to_le_bytes());
         }
