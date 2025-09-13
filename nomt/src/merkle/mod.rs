@@ -2,11 +2,13 @@
 //!
 //! This splits the work of warming-up and performing the trie update across worker threads.
 
+use bitvec::{field::BitField, order::Msb0, slice::BitSlice};
 use crossbeam::channel::{self, Receiver, Sender};
 use page_set::{FrozenSharedPageSet, PageSet};
 use parking_lot::Mutex;
 
 use nomt_core::{
+    page::DEPTH,
     page_id::{ChildPageIndex, PageId},
     proof::{PathProof, PathProofTerminal},
     trie::{self, KeyPath, Node, ValueHash},
@@ -48,7 +50,7 @@ use nomt_core::page_id::MAX_CHILD_INDEX;
 pub const PAGE_ELISION_THRESHOLD: u64 = 20;
 
 /// Bitfield used to note which child pages are elided and thus require on-the-fly reconstruction.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ElidedChildren {
     elided: u64,
 }
@@ -672,4 +674,38 @@ fn collides(k1: &Vec<u8>, k2: &Vec<u8>) -> bool {
         (k2, k1)
     };
     k_max.starts_with(k_min) && k_max[k_min.len()..].iter().all(|b| *b == 0)
+}
+
+// Given a PageId and a bit path to follow returns the reached PageId
+// and the number of used bits. Return None in the case of no page traversal
+// happened, thus the destination would be the same as the starting page.
+fn jump_page_destination<'a>(
+    mut page_id: PageId,
+    bit_path: &'a BitSlice<u8, Msb0>,
+) -> Option<PageId> {
+    bit_path
+        .chunks_exact(DEPTH)
+        .map(|chunk| {
+            // UNWRAP: 6 bits never overflows child page index
+            let child_index = ChildPageIndex::new(chunk.load_be::<u8>()).unwrap();
+            // UNWRAP: trie position never overflows page tree.
+            page_id = page_id.child_page_id(child_index).unwrap();
+            page_id.clone()
+        })
+        .last()
+}
+
+// Return the index of the first differing bit between jump_partial_path and bit_path.
+// Pad bit_path with zeros if it is shorter than jump_partial_path.
+// Return None if they are the same.
+fn divergence_bit(
+    jump_partial_path: &BitSlice<u8, Msb0>,
+    bit_path: &BitSlice<u8, Msb0>,
+) -> Option<usize> {
+    for (idx, jump_bit) in jump_partial_path.iter().by_vals().enumerate() {
+        if jump_bit != bit_path.get(idx).map(|b| *b).unwrap_or(false) {
+            return Some(idx);
+        }
+    }
+    None
 }
