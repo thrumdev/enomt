@@ -157,7 +157,8 @@ pub fn hash_path<H: NodeHasher>(
     path: &BitSlice<u8, Msb0>,
     siblings: impl IntoIterator<Item = Node>,
 ) -> Node {
-    for (bit, sibling) in path.iter().by_vals().rev().zip(siblings) {
+    let path_len = path.len();
+    for (counter, (bit, sibling)) in path.iter().by_vals().rev().zip(siblings).enumerate() {
         let (left, right) = if bit {
             (sibling, node)
         } else {
@@ -168,7 +169,8 @@ pub fn hash_path<H: NodeHasher>(
             left: left.clone(),
             right: right.clone(),
         };
-        node = H::hash_internal(&next);
+        let depth = path_len - counter - 1;
+        node = H::hash_internal(&next, &path[..depth]);
     }
 
     node
@@ -463,7 +465,7 @@ pub fn verify_update<H: NodeHasher>(
                             right: sibling,
                         }
                     };
-                    cur_node = H::hash_internal(&node_data);
+                    cur_node = H::hash_internal(&node_data, &bit_path[..cur_layer - 1]);
                 }
             }
             cur_layer -= 1;

@@ -897,7 +897,7 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
 
         if left != TERMINATOR || right != TERMINATOR {
             // case 4
-            return H::hash_internal(&InternalData { left, right });
+            return H::hash_internal(&InternalData { left, right }, &bits![u8, Msb0;]);
         }
     }
 

@@ -1421,7 +1421,8 @@ impl<H: NodeHasher> PageWalker<H> {
                     }
                 };
 
-                H::hash_internal(&node_data)
+                let depth = self.position.depth() as usize - 1;
+                H::hash_internal(&node_data, &self.position.path()[..depth])
             }
         }
     }
