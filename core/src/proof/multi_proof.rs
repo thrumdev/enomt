@@ -531,10 +531,7 @@ fn verify_range<H: NodeHasher>(
         let unique_len = terminal_path.depth - start_depth;
 
         let mut terminal_bit_path = terminal_path.terminal.path().to_bitvec();
-        if terminal_bit_path.len() > start_depth {
-            terminal_bit_path.drain(..start_depth);
-        }
-        terminal_bit_path.resize_with(unique_len, |_| false);
+        terminal_bit_path.resize_with(terminal_path.depth, |_| false);
 
         if let Some(collision_ops) = terminal_path.terminal.collision_ops() {
             let collision_subtree_root = collisions::build_subtrie::<H>(
@@ -628,15 +625,16 @@ fn verify_range<H: NodeHasher>(
 
     let total_siblings_used = common_bits_after_start + left_siblings_used + right_siblings_used;
     // hash up the internal node composed of left/right, then repeatedly apply common siblings.
+    let mut start_bit_path = start_path.terminal.path().to_bitvec();
+    start_bit_path.resize_with(common_len, |_| false);
 
-    let mut start_bit_path = start_path.terminal.path()[start_depth..].to_bitvec();
-    start_bit_path.resize_with(common_len - start_depth, |_| false);
+    let internal_data = InternalData {
+        left: left_node,
+        right: right_node,
+    };
 
     let node = hash_path::<H>(
-        H::hash_internal(&InternalData {
-            left: left_node,
-            right: right_node,
-        }),
+        H::hash_internal(&internal_data, &start_bit_path),
         &start_bit_path, // == last_path.same...
         siblings[..common_bits_after_start].iter().rev().copied(),
     );
@@ -980,7 +978,7 @@ fn hash_and_compact_terminal<H: NodeHasher>(
                         right: sibling,
                     }
                 };
-                cur_node = H::hash_internal(&node_data);
+                cur_node = H::hash_internal(&node_data, &terminal_bit_path[..cur_layer - 1]);
             }
         }
 
@@ -1483,14 +1481,20 @@ mod tests {
         let v0 = Blake3Hasher::hash_leaf(&leaf_0);
         let v1 = Blake3Hasher::hash_leaf(&leaf_1);
         let v2 = Blake3Hasher::hash_leaf(&leaf_2);
-        let s3 = Blake3Hasher::hash_internal(&InternalData {
-            left: v0.clone(),
-            right: v2,
-        });
-        let root = Blake3Hasher::hash_internal(&InternalData {
-            left: s3,
-            right: v1,
-        });
+        let s3 = Blake3Hasher::hash_internal(
+            &InternalData {
+                left: v0.clone(),
+                right: v2,
+            },
+            &bits!(u8, Msb0; 0),
+        );
+        let root = Blake3Hasher::hash_internal(
+            &InternalData {
+                left: s3,
+                right: v1,
+            },
+            &bits!(u8, Msb0; ),
+        );
 
         let path_proof_0 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_0.clone()),
@@ -1549,14 +1553,20 @@ mod tests {
         let v0 = Blake3Hasher::hash_leaf(&leaf_0);
         let v1 = Blake3Hasher::hash_leaf(&leaf_1);
         let v2 = Blake3Hasher::hash_leaf(&leaf_2);
-        let s3 = Blake3Hasher::hash_internal(&InternalData {
-            left: v0.clone(),
-            right: v2,
-        });
-        let root = Blake3Hasher::hash_internal(&InternalData {
-            left: s3,
-            right: v1,
-        });
+        let s3 = Blake3Hasher::hash_internal(
+            &InternalData {
+                left: v0.clone(),
+                right: v2,
+            },
+            &bits!(u8, Msb0; 0),
+        );
+        let root = Blake3Hasher::hash_internal(
+            &InternalData {
+                left: s3,
+                right: v1,
+            },
+            &bits!(u8, Msb0; ),
+        );
 
         let path_proof_0 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_0.clone()),
@@ -1623,8 +1633,10 @@ mod tests {
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
             (leaf_data, hash)
         };
-        let internal_hash =
-            |left, right| Blake3Hasher::hash_internal(&InternalData { left, right });
+        let internal_hash = |left, right, pos: &[u8], depth| {
+            let pos = &pos.view_bits::<Msb0>()[..depth];
+            Blake3Hasher::hash_internal(&InternalData { left, right }, &pos)
+        };
 
         let mut key_path_0 = [0; 32].to_vec();
         key_path_0[0] = 0b00000000;
@@ -1643,20 +1655,21 @@ mod tests {
         let (leaf_c, l8c) = make_leaf(key_path_2.clone(), 1);
         let (leaf_d, l8d) = make_leaf(key_path_3.clone(), 1);
 
-        let i7a = internal_hash(l8a, l8b);
-        let i7b = internal_hash(l8c, l8d);
+        let i7a = internal_hash(l8a, l8b, &[0b00000000], 7);
+        let i7b = internal_hash(l8c, l8d, &[0b00001000], 7);
 
-        let i6a = internal_hash(i7a, [7; 32]);
-        let i6b = internal_hash(i7b, [7; 32]);
+        let i6a = internal_hash(i7a, [7; 32], &[0b00000000], 6);
+        let i6b = internal_hash(i7b, [7; 32], &[0b00001000], 6);
 
-        let i5a = internal_hash(i6a, [6; 32]);
-        let i5b = internal_hash(i6b, [6; 32]);
+        let i5a = internal_hash(i6a, [6; 32], &[0b00000000], 5);
+        let i5b = internal_hash(i6b, [6; 32], &[0b00001000], 5);
 
-        let i4 = internal_hash(i5a, i5b);
-        let i3 = internal_hash(i4, [4; 32]);
-        let i2 = internal_hash(i3, [3; 32]);
-        let i1 = internal_hash(i2, [2; 32]);
-        let root = internal_hash(i1, [1; 32]);
+        let i4 = internal_hash(i5a, i5b, &[0b00000000], 4);
+
+        let i3 = internal_hash(i4, [4; 32], &[0b00000000], 3);
+        let i2 = internal_hash(i3, [3; 32], &[0b00000000], 2);
+        let i1 = internal_hash(i2, [2; 32], &[0b00000000], 1);
+        let root = internal_hash(i1, [1; 32], &[], 0);
 
         let path_proof_a = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_a.clone()),
@@ -1702,21 +1715,21 @@ mod tests {
         let (_, l8c) = make_leaf(key_path_2, 1);
         let (_, l8d) = make_leaf(key_path_3, 69);
 
-        let i7a = internal_hash(l8a, l8b);
-        let i7b = internal_hash(l8c, l8d);
+        let i7a = internal_hash(l8a, l8b, &[0b00000000], 7);
+        let i7b = internal_hash(l8c, l8d, &[0b00001000], 7);
 
-        let i6a = internal_hash(i7a, [7; 32]);
-        let i6b = internal_hash(i7b, [7; 32]);
+        let i6a = internal_hash(i7a, [7; 32], &[0b00000000], 6);
+        let i6b = internal_hash(i7b, [7; 32], &[0b00001000], 6);
 
-        let i5a = internal_hash(i6a, [6; 32]);
-        let i5b = internal_hash(i6b, [6; 32]);
+        let i5a = internal_hash(i6a, [6; 32], &[0b00000000], 5);
+        let i5b = internal_hash(i6b, [6; 32], &[0b00001000], 5);
 
-        let i4 = internal_hash(i5a, i5b);
+        let i4 = internal_hash(i5a, i5b, &[0b00000000], 4);
 
-        let i3 = internal_hash(i4, [4; 32]);
-        let i2 = internal_hash(i3, [3; 32]);
-        let i1 = internal_hash(i2, [2; 32]);
-        let post_root = internal_hash(i1, [1; 32]);
+        let i3 = internal_hash(i4, [4; 32], &[0b00000000], 3);
+        let i2 = internal_hash(i3, [3; 32], &[0b00000000], 2);
+        let i1 = internal_hash(i2, [2; 32], &[0b00000000], 1);
+        let post_root = internal_hash(i1, [1; 32], &[], 0);
 
         assert_eq!(
             verify_update::<Blake3Hasher>(&verified, ops).unwrap(),
@@ -1756,8 +1769,10 @@ mod tests {
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
             (leaf_data, hash)
         };
-        let internal_hash =
-            |left, right| Blake3Hasher::hash_internal(&InternalData { left, right });
+        let internal_hash = |left, right, pos: &[u8], depth| {
+            let pos = &pos.view_bits::<Msb0>()[..depth];
+            Blake3Hasher::hash_internal(&InternalData { left, right }, &pos)
+        };
 
         let (l0, v0) = make_leaf(k0);
         let (l1, v1) = make_leaf(k1);
@@ -1766,15 +1781,15 @@ mod tests {
         let (l4, v4) = make_leaf(k4);
         let (l5, v5) = make_leaf(k5);
 
-        let i1 = internal_hash(v0, v1);
-        let i2 = internal_hash(i1, v2);
-        let i3 = internal_hash(i2, TERMINATOR);
+        let i1 = internal_hash(v0, v1, &[0b00000000], 3);
+        let i2 = internal_hash(i1, v2, &[0b00000000], 2);
+        let i3 = internal_hash(i2, TERMINATOR, &[0b00000000], 1);
 
-        let i4 = internal_hash(v4, TERMINATOR);
-        let i5 = internal_hash(i4, v5);
-        let i6 = internal_hash(v3, i5);
+        let i4 = internal_hash(v4, TERMINATOR, &[0b11000000], 3);
+        let i5 = internal_hash(i4, v5, &[0b11000000], 2);
+        let i6 = internal_hash(v3, i5, &[0b10000000], 1);
 
-        let root = internal_hash(i3, i6);
+        let root = internal_hash(i3, i6, &[], 0);
 
         let leaf_proof = |leaf, siblings| PathProof {
             terminal: PathProofTerminal::Leaf(leaf),
@@ -1845,8 +1860,11 @@ mod tests {
             let hash = Blake3Hasher::hash_leaf(&leaf_data);
             (leaf_data, hash)
         };
-        let internal_hash =
-            |left, right| Blake3Hasher::hash_internal(&InternalData { left, right });
+
+        let internal_hash = |left, right, pos: &[u8], depth| {
+            let pos = &pos.view_bits::<Msb0>()[..depth];
+            Blake3Hasher::hash_internal(&InternalData { left, right }, &pos)
+        };
 
         let (_l0, v0) = make_leaf(k0);
         let (l1, v1) = make_leaf(k1);
@@ -1862,20 +1880,20 @@ mod tests {
         let e6 = [6; 32];
         let e7 = TERMINATOR;
 
-        let i1 = internal_hash(v1, v2);
-        let i2 = internal_hash(i1, e1);
-        let i3 = internal_hash(i2, e2);
-        let i4 = internal_hash(i3, e3);
+        let i1 = internal_hash(v1, v2, &[0b10000000], 7);
+        let i2 = internal_hash(i1, e1, &[0b10000000], 6);
+        let i3 = internal_hash(i2, e2, &[0b10000000], 5);
+        let i4 = internal_hash(i3, e3, &[0b10000000], 4);
 
-        let i5 = internal_hash(v3, v4);
-        let i6 = internal_hash(e4, i5);
-        let i7 = internal_hash(e5, i6);
+        let i5 = internal_hash(v3, v4, &[0b10011100], 6);
+        let i6 = internal_hash(e4, i5, &[0b10011000], 5);
+        let i7 = internal_hash(e5, i6, &[0b10010000], 4);
 
-        let i8 = internal_hash(i4, i7);
-        let i9 = internal_hash(i8, e6);
-        let i10 = internal_hash(i9, e7);
+        let i8 = internal_hash(i4, i7, &[0b10000000], 3);
+        let i9 = internal_hash(i8, e6, &[0b10000000], 2);
+        let i10 = internal_hash(i9, e7, &[0b10000000], 1);
 
-        let root = internal_hash(v0, i10);
+        let root = internal_hash(v0, i10, &[], 0);
 
         let leaf_proof = |leaf, siblings| PathProof {
             terminal: PathProofTerminal::Leaf(leaf),
@@ -1904,7 +1922,6 @@ mod tests {
     }
 
     #[test]
-
     fn test_verify_update_underflow_prefix_paths() {
         // 1. Define paths with prefix relationship
         let bits_prefix = bitvec![u8, Msb0; 1, 0, 1, 0]; // length 4
@@ -1962,10 +1979,13 @@ mod tests {
         // Create a plausible root for the test setup.
         // For the purpose of triggering the bug, the exact root structure isn't critical,
         // as long as the VerifiedMultiProof structure is valid and contains the prefix paths.
-        let plausible_root = Blake3Hasher::hash_internal(&InternalData {
-            left: node_prefix,
-            right: node_longer,
-        });
+        let plausible_root = Blake3Hasher::hash_internal(
+            &InternalData {
+                left: node_prefix,
+                right: node_longer,
+            },
+            &bits![u8, Msb0; 1, 0, 1, 0],
+        );
 
         let verified_proof = VerifiedMultiProof {
             inner: vec![vmp_prefix, vmp_longer],

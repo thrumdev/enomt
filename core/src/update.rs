@@ -346,7 +346,10 @@ pub fn build_trie<H: NodeHasher>(
             };
 
             last_internal.replace(internal_data.clone());
-            last_node = H::hash_internal(&internal_data);
+
+            let depth = skip + depth - 1;
+            last_node = H::hash_internal(&internal_data, &bits[..depth]);
+
             current_depth = next_depth.saturating_sub(1);
         }
 
@@ -374,7 +377,12 @@ pub fn build_trie<H: NodeHasher>(
 
 #[cfg(test)]
 mod tests {
-    use crate::trie::{NodeKind, TERMINATOR};
+    use bitvec::{slice::BitSlice, view::BitView};
+
+    use crate::{
+        hasher::internal_pos,
+        trie::{NodeKind, TERMINATOR},
+    };
 
     use super::{bitvec, build_trie, trie, BitVec, LeafData, Msb0, Node, NodeHasher, WriteNode};
 
@@ -405,7 +413,7 @@ mod tests {
             })
         }
 
-        fn hash_internal(data: &trie::InternalData) -> [u8; 32] {
+        fn hash_internal(data: &trie::InternalData, pos: &BitSlice<u8, Msb0>) -> [u8; 32] {
             let mut hash = if data.left == TERMINATOR {
                 data.right
             } else if data.right == TERMINATOR {
@@ -414,6 +422,7 @@ mod tests {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(&data.left);
                 hasher.update(&data.right);
+                hasher.update(&internal_pos(pos));
                 hasher.finalize().into()
             };
 
@@ -445,10 +454,11 @@ mod tests {
         (leaf, hash)
     }
 
-    fn branch_hash(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    fn branch_hash(left: [u8; 32], right: [u8; 32], key_path: &[u8], depth: usize) -> [u8; 32] {
         let data = trie::InternalData { left, right };
 
-        let hash = DummyNodeHasher::hash_internal(&data);
+        let key_path = &key_path.view_bits::<Msb0>()[..depth];
+        let hash = DummyNodeHasher::hash_internal(&data, key_path);
         hash
     }
 
@@ -539,8 +549,8 @@ mod tests {
         let visited_jumps = visited.visited_jumps;
         let visited = visited.visited;
 
-        let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b);
-        let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c);
+        let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b, &[0b0001_0000], 6);
+        let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c, &[0b0001_0000], 5);
         let root_branch_hash = branch_abc_hash;
 
         assert_eq!(
@@ -581,12 +591,12 @@ mod tests {
         let visited_jumps = visited.visited_jumps;
         let visited = visited.visited;
 
-        let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b);
-        let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c);
+        let branch_ab_hash = branch_hash(leaf_hash_a, leaf_hash_b, &[0b0000_0000], 2);
+        let branch_abc_hash = branch_hash(branch_ab_hash, leaf_hash_c, &[0b0000_0000], 1);
 
-        let branch_de = branch_hash(leaf_hash_d, leaf_hash_e);
+        let branch_de = branch_hash(leaf_hash_d, leaf_hash_e, &[0b1010_0000], 3);
 
-        let branch_abc_de_hash = branch_hash(branch_abc_hash, branch_de);
+        let branch_abc_de_hash = branch_hash(branch_abc_hash, branch_de, &[], 0);
 
         assert_eq!(
             visited,
@@ -660,7 +670,8 @@ mod tests {
 
         let visited_jumps = visited.visited_jumps;
 
-        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        let expected_jump_node =
+            branch_hash(leaf_hash_a, leaf_hash_b, &[0b0001_0001, 0b0001_0000], 15);
         assert_eq!(visited_jumps.len(), 1);
         assert_eq!(
             visited_jumps[0].0,
@@ -692,19 +703,29 @@ mod tests {
 
         let visited_jumps = visited.visited_jumps;
 
-        let jump_ab = branch_hash(leaf_hash_a, leaf_hash_b);
+        let jump_ab = branch_hash(
+            leaf_hash_a,
+            leaf_hash_b,
+            &[0b00100000, 0b00100000, 0b00000000, 0b00100000],
+            31,
+        );
         assert_eq!(visited_jumps.len(), 3);
 
         assert_eq!(visited_jumps[0].0.len(), 31);
         assert_eq!(visited_jumps[0].1, 12);
         assert_eq!(visited_jumps[0].2, jump_ab);
 
-        let jump_cd = branch_hash(leaf_hash_c, leaf_hash_d);
+        let jump_cd = branch_hash(
+            leaf_hash_c,
+            leaf_hash_d,
+            &[0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000],
+            39,
+        );
         assert_eq!(visited_jumps[1].0.len(), 39);
         assert_eq!(visited_jumps[1].1, 20);
         assert_eq!(visited_jumps[1].2, jump_cd);
 
-        let jump = branch_hash(jump_ab, jump_cd);
+        let jump = branch_hash(jump_ab, jump_cd, &[0b00100000, 0b00100000, 0b00000000], 18);
         assert_eq!(visited_jumps[2].0.len(), 18);
         assert_eq!(visited_jumps[2].1, 18);
         assert_eq!(visited_jumps[2].2, jump);
@@ -727,7 +748,8 @@ mod tests {
 
         let visited_jumps = visited.visited_jumps;
 
-        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        let expected_jump_node =
+            branch_hash(leaf_hash_a, leaf_hash_b, &[0b0001_0101, 0b1001_0000], 15);
         assert_eq!(visited_jumps.len(), 1);
         assert_eq!(
             visited_jumps[0].0,
@@ -755,7 +777,8 @@ mod tests {
 
         let visited_jumps = visited.visited_jumps;
 
-        let expected_jump_node = branch_hash(leaf_hash_a, leaf_hash_b);
+        let expected_jump_node =
+            branch_hash(leaf_hash_a, leaf_hash_b, &[0b0001_0001, 0b0001_0000], 15);
         assert_eq!(visited_jumps.len(), 2);
         assert_eq!(
             visited_jumps[0].0,
@@ -764,7 +787,12 @@ mod tests {
         assert_eq!(visited_jumps[0].1, 14);
         assert_eq!(visited_jumps[0].2, expected_jump_node);
 
-        let expected_jump_node = branch_hash(leaf_hash_c, leaf_hash_d);
+        let expected_jump_node = branch_hash(
+            leaf_hash_c,
+            leaf_hash_d,
+            &[0b1000_0000, 0b1000_0000, 0b1000_0000],
+            23,
+        );
         assert_eq!(
             visited_jumps[1].0,
             bitvec![u8, Msb0; 1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0]
@@ -794,7 +822,12 @@ mod tests {
 
         let visited_jumps = visited.visited_jumps;
 
-        let jump_bc = branch_hash(leaf_hash_b, leaf_hash_c);
+        let jump_bc = branch_hash(
+            leaf_hash_b,
+            leaf_hash_c,
+            &[0b0001_0001, 0b0001_0001, 0b0001_0000, 0b0001_0000],
+            31,
+        );
         assert_eq!(visited_jumps.len(), 2);
         assert_eq!(
             visited_jumps[0].0,
@@ -803,7 +836,7 @@ mod tests {
         assert_eq!(visited_jumps[0].1, 15);
         assert_eq!(visited_jumps[0].2, jump_bc);
 
-        let expected_jump = branch_hash(leaf_hash_a, jump_bc);
+        let expected_jump = branch_hash(leaf_hash_a, jump_bc, &[0b0001_0001, 0b0001_0000], 15);
         assert_eq!(
             visited_jumps[1].0,
             bitvec![u8, Msb0; 0,0,0,1,0,0,0,1,0,0,0,1,0,0,0]

@@ -5,6 +5,8 @@ use crate::trie::{InternalData, LeafData, LeafDataRef, Node, NodeKind, TERMINATO
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use bitvec::{order::Msb0, slice::BitSlice};
+
 /// A trie node hash function specialized for 64 bytes of data.
 ///
 /// Note that it is illegal for the produced hash to equal [0; 32], as this value is reserved
@@ -25,7 +27,7 @@ pub trait NodeHasher {
 
     /// Hash an internal node. This should domain-separate
     /// the hash according to the node kind.
-    fn hash_internal(data: &InternalData) -> [u8; 32];
+    fn hash_internal(data: &InternalData, pos: &BitSlice<u8, Msb0>) -> [u8; 32];
 
     /// Get the kind of the given node.
     fn node_kind(node: &Node) -> NodeKind;
@@ -62,6 +64,31 @@ pub fn set_msbs_by_node_kind(node: &mut Node, kind: NodeKind) {
     }
 }
 
+/// Given the bit path to an internal node, return a vector that
+/// uniquely encodes the position of the branch node.
+pub fn internal_pos(pos: &BitSlice<u8, Msb0>) -> Vec<u8> {
+    let depth = pos.len();
+
+    if depth == 0 {
+        return vec![];
+    }
+
+    let mut pos = pos.to_bitvec().as_raw_mut_slice().to_vec();
+
+    // Erase the possible gargabe within the last byte.
+    if depth % 8 != 0 {
+        let shift = 8 - (depth % 8);
+        let mask = !((1 << shift) - 1);
+        // UNWRAP: depth is not zero thus at least 1 byte is expected.
+        *pos.last_mut().unwrap() &= mask;
+    }
+
+    // Extend the position by the length, in bits, of the key path.
+    pos.extend_from_slice(&(depth as u16).to_le_bytes());
+
+    pos
+}
+
 /// A simple trait for representing binary hash functions.
 pub trait BinaryHash {
     /// Given a bit-string, produce a 32-bit hash.
@@ -78,8 +105,20 @@ pub trait BinaryHash {
     /// An optional specialization of `hash` where there are two inputs, left and right.
     fn hash2_concat(left: &[u8], right: &[u8]) -> [u8; 32] {
         let mut buf = Vec::with_capacity(left.len() + right.len());
-        buf[0..left.len()].copy_from_slice(left);
-        buf[left.len()..right.len()].copy_from_slice(right);
+        buf[..left.len()].copy_from_slice(left);
+        buf[left.len()..].copy_from_slice(right);
+        Self::hash(&buf)
+    }
+
+    /// An optional specialization of `hash` where there are four inputs.
+    fn hash3_concat(a: &[u8], b: &[u8], c: &[u8]) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(a.len() + b.len() + c.len());
+        let mut base = 0;
+        buf[..a.len()].copy_from_slice(a);
+        base += a.len();
+        buf[base..base + b.len()].copy_from_slice(b);
+        base += b.len();
+        buf[base..base + c.len()].copy_from_slice(c);
         Self::hash(&buf)
     }
 }
@@ -122,13 +161,13 @@ impl<H: BinaryHash> NodeHasher for BinaryHasher<H> {
         h
     }
 
-    fn hash_internal(data: &InternalData) -> [u8; 32] {
+    fn hash_internal(data: &InternalData, pos: &BitSlice<u8, Msb0>) -> [u8; 32] {
         if data.left == TERMINATOR {
             data.right
         } else if data.right == TERMINATOR {
             data.left
         } else {
-            let mut h = H::hash2_32_concat(&data.left, &data.right);
+            let mut h = H::hash3_concat(&data.left, &data.right, &internal_pos(&pos));
             set_msbs_by_node_kind(&mut h, NodeKind::Internal);
             h
         }
@@ -175,6 +214,14 @@ pub mod blake3 {
             hasher.update(right);
             hasher.finalize().into()
         }
+
+        fn hash3_concat(a: &[u8], b: &[u8], c: &[u8]) -> [u8; 32] {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(a);
+            hasher.update(b);
+            hasher.update(c);
+            hasher.finalize().into()
+        }
     }
 }
 
@@ -208,6 +255,14 @@ pub mod sha2 {
             let mut hasher = Sha256::new();
             hasher.update(left);
             hasher.update(right);
+            hasher.finalize().into()
+        }
+
+        fn hash3_concat(a: &[u8], b: &[u8], c: &[u8]) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            hasher.update(a);
+            hasher.update(b);
+            hasher.update(c);
             hasher.finalize().into()
         }
     }
