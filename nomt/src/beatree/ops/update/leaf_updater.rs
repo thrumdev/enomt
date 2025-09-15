@@ -870,7 +870,7 @@ pub mod tests {
 
         let mut builder = LeafBuilder::new(
             &PAGE_POOL,
-            dbg!(gauge.n),
+            gauge.n,
             gauge.prefix_len,
             gauge.prefix_compressed_items(),
             gauge.compressed_keys_len(),

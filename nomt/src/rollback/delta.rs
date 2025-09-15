@@ -83,7 +83,7 @@ impl Delta {
             let mut key_len = [0u8; 2];
             reader.read_exact(&mut key_len)?;
             let key_len = u16::from_le_bytes(key_len);
-            let mut key_path = vec![0; dbg!(key_len) as usize];
+            let mut key_path = vec![0; key_len as usize];
             reader.read_exact(&mut key_path)?;
             let preemted = priors.insert(key_path.to_vec(), None).is_some();
             if preemted {
@@ -100,7 +100,7 @@ impl Delta {
             let mut key_len = [0u8; 2];
             reader.read_exact(&mut key_len)?;
             let key_len = u16::from_le_bytes(key_len);
-            let mut key_path = vec![0; dbg!(key_len) as usize];
+            let mut key_path = vec![0; key_len as usize];
             reader.read_exact(&mut key_path)?;
             // Read the value.
             let mut value = Vec::new();
