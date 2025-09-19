@@ -19,6 +19,8 @@ use alloc::{vec, vec::Vec};
 use bitvec::prelude::*;
 use core::{cmp::Ordering, ops::Range};
 
+use super::{path_proof::SiblingChunk, sibling_chunks_depth};
+
 /// This struct includes the terminal node and its depth
 #[derive(Debug, Clone)]
 #[cfg_attr(
@@ -47,17 +49,17 @@ pub struct MultiProof {
     /// to reconstruct all other nodes later.
     ///
     /// The format is a recursive bisection:
-    /// [upper_siblings ++ left_siblings ++ right_siblings]
+    /// [upper_sibling_chunks ++ left_sibling_chunks ++ right_sibling_chunks]
     ///
-    /// upper_siblings could be:
-    /// + siblings shared among all paths in each bisection
-    /// + unique siblings associated with a terminal node
+    /// upper_sibling_chunks could be:
+    /// + sibling_chunks shared among all paths in each bisection
+    /// + unique sibling_chunks associated with a terminal node
     ///
     /// In the latter case, both left and right bisections will be empty
     ///
-    /// left_siblings is the same format, but applied to all the nodes in the left bisection.
-    /// right_siblings is the same format, but applied to all the nodes in the right bisection.
-    pub siblings: Vec<Node>,
+    /// left_sibling_chunks is the same format, but applied to all the nodes in the left bisection.
+    /// right_sibling_chunks is the same format, but applied to all the nodes in the right bisection.
+    pub sibling_chunks: Vec<SiblingChunk>,
 }
 
 // Given a vector of PathProofs ordered by the key_path,
@@ -87,27 +89,40 @@ impl PathProofRange {
     fn prove_unique_path_remainder(
         &self,
         path_proofs: &[PathProof],
-    ) -> Option<(MultiPathProof, Vec<Node>)> {
+    ) -> Option<(MultiPathProof, Vec<SiblingChunk>)> {
         // If PathProofRange contains only one path_proofs
-        // return a MultiPathProof with all its unique siblings
+        // return a MultiPathProof with all its unique sibling_chunks
         if self.lower != self.upper - 1 {
             return None;
         }
 
         let path_proof = &path_proofs[self.lower];
-        let unique_siblings: Vec<Node> = path_proof
-            .siblings
-            .iter()
-            .skip(self.path_bit_index)
-            .copied()
-            .collect();
+
+        // self.path_bit_index has already been increased by one due to
+        // the bisection, because paths differs at self.path_bit_index - 1,
+        // which was the bit index and it got increased by one, thus
+        // it already represent the depth within the merkle trie needed to reach.
+        let (n_chunks, chunks_depth) =
+            count_chunks(&path_proof.sibling_chunks, self.path_bit_index);
+
+        let unique_chunks = if chunks_depth != self.path_bit_index {
+            let remaining_covered_bits = chunks_depth - self.path_bit_index;
+            assert_eq!(chunks_depth - remaining_covered_bits, self.path_bit_index);
+            let mut unique_chunks = path_proof.sibling_chunks[n_chunks - 1..].to_vec();
+            unique_chunks[0] = SiblingChunk::Terminators(remaining_covered_bits);
+            unique_chunks
+        } else {
+            // unique sibling_chunks start right after the siblign associated
+            // to the bisection
+            path_proof.sibling_chunks[n_chunks..].to_vec()
+        };
 
         Some((
             MultiPathProof {
                 terminal: path_proof.terminal.clone(),
-                depth: self.path_bit_index + unique_siblings.len(),
+                depth: self.path_bit_index + sibling_chunks_depth(&unique_chunks),
             },
-            unique_siblings,
+            unique_chunks,
         ))
     }
 
@@ -130,7 +145,7 @@ impl PathProofRange {
             .unwrap_or(false);
 
         if bit_lower != bit_upper {
-            // if they differ we can skip their siblings but we need to bisect the slice
+            // if they differ we can skip their sibling_chunks but we need to bisect the slice
             //
             // binary search between key_paths in the slice to see where to
             // perform the bisection
@@ -174,9 +189,12 @@ impl PathProofRange {
             PathProofRangeStep::Bisect { left, right }
         } else {
             // if they don't differ, we need their sibling
-            let sibling = path_proofs[self.lower].siblings[self.path_bit_index];
+            let sibling_chunks = &path_proofs[self.lower].sibling_chunks;
+            let (n_chunks, _) = count_chunks(&sibling_chunks, self.path_bit_index + 1);
             self.path_bit_index += 1;
-            PathProofRangeStep::Advance { sibling }
+            PathProofRangeStep::Advance {
+                sibling: sibling_chunks[n_chunks - 1].node(),
+            }
         }
     }
 }
@@ -219,18 +237,18 @@ impl MultiProof {
         //
         // Iterate this algorithm on the bisection to determine the minimum necessary siblings.
         //
-        // `siblings` will follow this structure for each bisection
-        // |common siblings| ext siblings in the left bisection | ext siblings in the right bisection |
+        // `sibling_chunks` will follow this structure for each bisection
+        // |common sibling_chunks| ext sibling_chunks in the left bisection | ext sibling_chunks in the right bisection |
 
         if path_proofs.is_empty() {
             return MultiProof {
                 paths: Vec::new(),
-                siblings: Vec::new(),
+                sibling_chunks: Vec::new(),
             };
         }
 
         let mut paths: Vec<MultiPathProof> = vec![];
-        let mut siblings: Vec<Node> = vec![];
+        let mut sibling_chunks: Vec<SiblingChunk> = vec![];
 
         // initially we're looking at all the path_proofs
         let mut proof_range = PathProofRange {
@@ -239,22 +257,22 @@ impl MultiProof {
             upper: path_proofs.len(),
         };
 
-        // Common siblings encountered while stepping through PathProofRange
-        let mut common_siblings: Vec<Node> = vec![];
+        // Common sibling_chunks encountered while stepping through PathProofRange
+        let mut common_sibling_chunks: Vec<SiblingChunk> = vec![];
 
         // stack used to handle bfs through PathProofRanges
         let mut stack: Vec<PathProofRange> = vec![];
 
         loop {
             // check if proof_range represents a unique path proof
-            if let Some((sub_path_proof, unique_siblings)) =
+            if let Some((sub_path_proof, unique_chunks)) =
                 proof_range.prove_unique_path_remainder(&path_proofs)
             {
                 paths.push(sub_path_proof);
-                siblings.extend(unique_siblings);
+                sibling_chunks.extend(unique_chunks);
 
                 // sub_path_proof always immediately follows a bisection in a well-formed trie
-                assert!(common_siblings.is_empty());
+                assert!(common_sibling_chunks.is_empty());
 
                 // skip to the next bisection in the stack, if empty we're finished
                 proof_range = match stack.pop() {
@@ -269,18 +287,35 @@ impl MultiProof {
             // sibling of the current sub tree
             match proof_range.step(&path_proofs) {
                 PathProofRangeStep::Bisect { left, right } => {
-                    // insert collected common siblings
-                    siblings.extend(common_siblings.drain(..));
+                    // insert collected common sibling_chunks
+                    sibling_chunks.extend(common_sibling_chunks.drain(..));
 
                     // push into the stack the right Bisection and work on the left one
                     proof_range = left;
                     stack.push(right);
                 }
-                PathProofRangeStep::Advance { sibling } => common_siblings.push(sibling),
+                PathProofRangeStep::Advance { sibling } => {
+                    let next = SiblingChunk::Sibling(sibling);
+
+                    // If the common sibling is empty, just push the new item.
+                    let Some(last_chunks) = common_sibling_chunks.last_mut() else {
+                        common_sibling_chunks.push(next);
+                        continue;
+                    };
+
+                    // Attempt to compact with the last item, if that fails, just push it.
+                    match last_chunks.try_comapct(next) {
+                        Err(chunk) => common_sibling_chunks.push(chunk),
+                        Ok(()) => (),
+                    }
+                }
             };
         }
 
-        Self { paths, siblings }
+        Self {
+            paths,
+            sibling_chunks,
+        }
     }
 }
 
@@ -299,14 +334,14 @@ pub enum MultiProofVerificationError {
 struct VerifiedMultiPath {
     terminal: PathProofTerminal,
     depth: usize,
-    unique_siblings: Range<usize>,
+    unique_chunks: Range<usize>,
 }
 
-// indicates a bisection which started at a given depth and covers these common siblings.
+// indicates a bisection which started at a given depth and covers these common sibling_chunks.
 #[derive(Debug, Clone)]
 struct VerifiedBisection {
     start_depth: usize,
-    common_siblings: Range<usize>,
+    common_chunks: Range<usize>,
 }
 
 /// A verified multi-proof.
@@ -315,7 +350,7 @@ struct VerifiedBisection {
 pub struct VerifiedMultiProof {
     inner: Vec<VerifiedMultiPath>,
     bisections: Vec<VerifiedBisection>,
-    siblings: Vec<Node>,
+    sibling_chunks: Vec<SiblingChunk>,
     root: Node,
 }
 
@@ -480,10 +515,10 @@ pub fn verify<H: NodeHasher>(
         }
     }
 
-    let (new_root, siblings_used) = verify_range::<H>(
+    let (new_root, sibling_chunks_used) = verify_range::<H>(
         0,
         &multi_proof.paths,
-        &multi_proof.siblings,
+        &multi_proof.sibling_chunks,
         0,
         &mut verified_paths,
         &mut verified_bisections,
@@ -493,23 +528,45 @@ pub fn verify<H: NodeHasher>(
         return Err(MultiProofVerificationError::RootMismatch);
     }
 
-    if siblings_used != multi_proof.siblings.len() {
+    if sibling_chunks_used != multi_proof.sibling_chunks.len() {
         return Err(MultiProofVerificationError::TooManySiblings);
     }
 
     Ok(VerifiedMultiProof {
         inner: verified_paths,
         bisections: verified_bisections,
-        siblings: multi_proof.siblings.clone(),
+        sibling_chunks: multi_proof.sibling_chunks.clone(),
         root,
     })
 }
 
-// returns the node made by verifying this range along with the number of siblings used.
+/// Given a vector of sibling chunks count how many of them are needed
+/// to reach or exceed the target depth. Returns also the accomulated depth.
+///
+/// Panics if the specified target cannot be reached by the chunks.
+fn count_chunks(sibling_chunks: &[SiblingChunk], target_depth: usize) -> (usize, usize) {
+    if target_depth == 0 {
+        return (0, 0);
+    }
+
+    let mut depth = 0;
+    for (idx, chunk) in sibling_chunks.iter().enumerate() {
+        let covered_layers = chunk.covered_layers();
+        if depth + covered_layers >= target_depth {
+            return (idx + 1, depth + covered_layers);
+        }
+        depth += covered_layers;
+    }
+
+    assert_eq!(depth, target_depth);
+    (sibling_chunks.len(), depth)
+}
+
+// returns the node made by verifying this range along with the number of sibling_chunks used.
 fn verify_range<H: NodeHasher>(
     start_depth: usize,
     paths: &[MultiPathProof],
-    siblings: &[Node],
+    sibling_chunks: &[SiblingChunk],
     sibling_offset: usize,
     verified_paths: &mut Vec<VerifiedMultiPath>,
     verified_bisections: &mut Vec<VerifiedBisection>,
@@ -520,12 +577,12 @@ fn verify_range<H: NodeHasher>(
         verified_paths.push(VerifiedMultiPath {
             terminal: PathProofTerminal::Terminator(crate::trie_pos::TriePosition::new()),
             depth: 0,
-            unique_siblings: Range { start: 0, end: 0 },
+            unique_chunks: Range { start: 0, end: 0 },
         });
         return Ok((TERMINATOR, 0));
     }
     if paths.len() == 1 {
-        // at a terminal node, 'siblings' will contain all unique
+        // at a terminal node, 'sibling_chunks' will contain all unique
         // nodes, hash them up, and return that
         let terminal_path = &paths[0];
         let unique_len = terminal_path.depth - start_depth;
@@ -546,22 +603,25 @@ fn verify_range<H: NodeHasher>(
             }
         }
 
+        let (n_chunks, reached_depth) = count_chunks(&sibling_chunks, unique_len);
+        assert_eq!(reached_depth, unique_len);
+
         let node = hash_path::<H>(
             terminal_path.terminal.node::<H>(),
             &terminal_bit_path,
-            siblings[..unique_len].iter().rev().copied(),
+            sibling_chunks[..n_chunks].iter().rev().cloned(),
         );
 
         verified_paths.push(VerifiedMultiPath {
             terminal: terminal_path.terminal.clone(),
             depth: terminal_path.depth,
-            unique_siblings: Range {
+            unique_chunks: Range {
                 start: sibling_offset,
-                end: sibling_offset + unique_len,
+                end: sibling_offset + n_chunks,
             },
         });
 
-        return Ok((node, unique_len));
+        return Ok((node, n_chunks));
     }
 
     let start_path = &paths[0];
@@ -593,38 +653,43 @@ fn verify_range<H: NodeHasher>(
     // bisection is based off of them.
     let bisect_idx = search_result.unwrap_err();
 
-    if common_bits_after_start > 0 {
+    let (common_sibling_end, reached_depth) =
+        count_chunks(&sibling_chunks, common_bits_after_start);
+    assert_eq!(reached_depth, common_bits_after_start);
+
+    if common_sibling_end > 0 {
         verified_bisections.push(VerifiedBisection {
             start_depth,
-            common_siblings: Range {
+            common_chunks: Range {
                 start: sibling_offset,
-                end: sibling_offset + common_bits_after_start,
+                end: sibling_offset + common_sibling_end,
             },
         });
     }
 
     // recurse into the left bisection.
-    let (left_node, left_siblings_used) = verify_range::<H>(
+    let (left_node, left_sibling_chunks_used) = verify_range::<H>(
         uncommon_start_len,
         &paths[..bisect_idx],
-        &siblings[common_bits_after_start..],
-        sibling_offset + common_bits_after_start,
+        &sibling_chunks[common_sibling_end..],
+        sibling_offset + common_sibling_end,
         verified_paths,
         verified_bisections,
     )?;
 
-    // now that we know how many siblings were used on the left, we can recurse into the right.
-    let (right_node, right_siblings_used) = verify_range::<H>(
+    // now that we know how many sibling_chunks were used on the left, we can recurse into the right.
+    let (right_node, right_sibling_chunks_used) = verify_range::<H>(
         uncommon_start_len,
         &paths[bisect_idx..],
-        &siblings[common_bits_after_start + left_siblings_used..],
-        sibling_offset + common_bits_after_start + left_siblings_used,
+        &sibling_chunks[common_sibling_end + left_sibling_chunks_used..],
+        sibling_offset + common_sibling_end + left_sibling_chunks_used,
         verified_paths,
         verified_bisections,
     )?;
 
-    let total_siblings_used = common_bits_after_start + left_siblings_used + right_siblings_used;
-    // hash up the internal node composed of left/right, then repeatedly apply common siblings.
+    let total_sibling_chunks_used =
+        common_sibling_end + left_sibling_chunks_used + right_sibling_chunks_used;
+    // hash up the internal node composed of left/right, then repeatedly apply common sibling_chunks.
     let mut start_bit_path = start_path.terminal.path().to_bitvec();
     start_bit_path.resize_with(common_len, |_| false);
 
@@ -636,9 +701,9 @@ fn verify_range<H: NodeHasher>(
     let node = hash_path::<H>(
         H::hash_internal(&internal_data, &start_bit_path),
         &start_bit_path, // == last_path.same...
-        siblings[..common_bits_after_start].iter().rev().copied(),
+        sibling_chunks[..common_sibling_end].iter().rev().cloned(),
     );
-    Ok((node, total_siblings_used))
+    Ok((node, total_sibling_chunks_used))
 }
 
 /// Errors that can occur when verifying an update against a [`VerifiedMultiProof`].
@@ -668,16 +733,16 @@ fn terminal_contains(terminal: &VerifiedMultiPath, key_path: &KeyPath) -> bool {
     terminal_position.subtrie_contains(&key_path)
 }
 
-// walks a multiproof left-to-right and keeps track of a stack of all siblings, based on
+// walks a multiproof left-to-right and keeps track of a stack of all sibling_chunks, based on
 // bisections.
 //
 // when this has ingested all paths up to and including X, the stack will represent all non-unique
-// siblings for X.
+// sibling_chunks for X.
 #[derive(Debug)]
 struct CommonSiblings {
     bisection_stack: Vec<VerifiedBisection>,
-    stack: Vec<(usize, Node)>,
-    taken_siblings: usize,
+    stack: Vec<(usize, SiblingChunk)>,
+    taken_sibling_chunks: usize,
     terminal_index: usize,
     bisection_index: usize,
 }
@@ -687,7 +752,7 @@ impl CommonSiblings {
         CommonSiblings {
             bisection_stack: Vec::new(),
             stack: Vec::new(),
-            taken_siblings: 0,
+            taken_sibling_chunks: 0,
             terminal_index: 0,
             bisection_index: 0,
         }
@@ -697,11 +762,14 @@ impl CommonSiblings {
         let next_terminal = &proof.inner[self.terminal_index];
 
         let mut prune = true;
-        while next_terminal.unique_siblings.start != self.taken_siblings {
+        while next_terminal.unique_chunks.start != self.taken_sibling_chunks {
             let next_bisection = &proof.bisections[self.bisection_index];
             self.bisection_index += 1;
 
-            assert_eq!(next_bisection.common_siblings.start, self.taken_siblings);
+            assert_eq!(
+                next_bisection.common_chunks.start,
+                self.taken_sibling_chunks
+            );
             if prune {
                 self.pop_to(next_bisection.start_depth);
                 prune = false;
@@ -710,19 +778,19 @@ impl CommonSiblings {
             // a bisection at depth N involves siblings starting at N+1
             self.extend(
                 next_bisection.start_depth + 1,
-                next_bisection.common_siblings.end,
-                &proof.siblings,
-                false,
+                next_bisection.common_chunks.end,
+                &proof.sibling_chunks,
             );
             self.bisection_stack.push(next_bisection.clone());
         }
 
-        let terminal_n = next_terminal.unique_siblings.end - next_terminal.unique_siblings.start;
+        let terminal_n =
+            sibling_chunks_depth(&proof.sibling_chunks[next_terminal.unique_chunks.clone()]);
+
         self.extend(
             next_terminal.depth - terminal_n + 1,
-            next_terminal.unique_siblings.end,
-            &proof.siblings,
-            true,
+            next_terminal.unique_chunks.end,
+            &proof.sibling_chunks,
         );
         self.terminal_index += 1;
     }
@@ -741,25 +809,43 @@ impl CommonSiblings {
         }
     }
 
-    fn extend(&mut self, start_depth: usize, end: usize, siblings: &[Node], reverse: bool) {
-        if reverse {
-            for (i, sibling) in siblings[self.taken_siblings..end].iter().rev().enumerate() {
-                self.stack.push((start_depth + i, *sibling))
-            }
-        } else {
-            for (i, sibling) in siblings[self.taken_siblings..end].iter().enumerate() {
-                self.stack.push((start_depth + i, *sibling))
-            }
+    fn extend(&mut self, start_depth: usize, chunks_end: usize, sibling_chunks: &[SiblingChunk]) {
+        let mut depth = start_depth;
+        for chunk in sibling_chunks[self.taken_sibling_chunks..chunks_end].iter() {
+            let covered_layes = chunk.covered_layers();
+            self.stack.push((depth, chunk.clone()));
+            depth += covered_layes;
         }
-
-        self.taken_siblings = end;
+        self.taken_sibling_chunks = chunks_end;
     }
 
-    fn pop_if_at_depth(&mut self, depth: usize) -> Option<Node> {
-        if self.stack.last().map_or(false, |(d, _)| *d == depth) {
-            self.stack.pop().map(|(_, n)| n)
-        } else {
-            None
+    fn pop_from_chunk_if_at_depth(
+        &mut self,
+        depth: usize,
+        next_depth: usize,
+    ) -> Option<(Node, usize)> {
+        match self.stack.last() {
+            Some((depth_start, SiblingChunk::Sibling(_))) if depth == *depth_start => {
+                // UNWRAP: The stack has just been checked to contain an item.
+                let node = self.stack.pop().unwrap().1.node();
+                Some((node, 1))
+            }
+            Some((depth_start, SiblingChunk::Terminators(covered_layers)))
+                if depth == depth_start + covered_layers - 1 =>
+            {
+                let delta_layer = depth - next_depth;
+                let covered = std::cmp::min(*covered_layers, delta_layer);
+                let remaining_layers = covered_layers - covered;
+                let depth_start = *depth_start;
+                self.stack.pop();
+
+                if remaining_layers > 0 {
+                    self.stack
+                        .push((depth_start, SiblingChunk::Terminators(remaining_layers)));
+                }
+                Some((TERMINATOR, covered))
+            }
+            _ => None,
         }
     }
 }
@@ -943,18 +1029,41 @@ fn hash_and_compact_terminal<H: NodeHasher>(
     // iterate siblings up to the point of collision with next path, replacing with pending
     // siblings, and compacting where possible.
     // push (node, end_layer) to pending siblings when done.
-    for bit in terminal_bit_path.iter().by_vals().rev().take(up_layers) {
+    let mut bit_path_iter = terminal_bit_path.iter().by_vals().rev().take(up_layers);
+
+    while cur_layer > end_layer {
         let sibling = if pending_siblings.last().map_or(false, |p| p.1 == cur_layer) {
             // is this even possible? maybe not. but being extra cautious...
-            let _ = common_siblings.pop_if_at_depth(cur_layer);
+            let _ = common_siblings.pop_from_chunk_if_at_depth(cur_layer, cur_layer - 1);
             // UNWRAP: guaranteed to exist.
             pending_siblings.pop().unwrap().0
         } else {
+            let next_depth = std::cmp::max(
+                pending_siblings.last().map(|p| p.1).unwrap_or(end_layer),
+                end_layer,
+            );
+
             // UNWRAP: `common_siblings` holds everything which isn't computed dynamically from branch
             // to branch. basically, it's the inverse of `pending_siblings`. so if the sibling isn't
             // in pending_siblings, it's in here.
-            common_siblings.pop_if_at_depth(cur_layer).unwrap()
+            let (sibling, covered_by_sibling) = common_siblings
+                .pop_from_chunk_if_at_depth(cur_layer, next_depth)
+                .unwrap();
+
+            if covered_by_sibling > 1 {
+                cur_layer -= covered_by_sibling;
+                assert_eq!(sibling, TERMINATOR);
+                for _ in 0..covered_by_sibling {
+                    bit_path_iter.next();
+                }
+                continue;
+            }
+
+            sibling
         };
+
+        // UNWRAP: There must be a bit within the bitpath if the end_layer is not reached.
+        let bit = bit_path_iter.next().unwrap();
 
         match (NodeKind::of::<H>(&cur_node), NodeKind::of::<H>(&sibling)) {
             (NodeKind::Terminator, NodeKind::Terminator) => {}
@@ -996,6 +1105,7 @@ mod tests {
     use crate::proof::multi_proof::{
         MultiVerifyUpdateError, VerifiedMultiPath, VerifiedMultiProof,
     };
+    use crate::proof::path_proof::SiblingChunk;
     use crate::{
         hasher::{Blake3Hasher, NodeHasher},
         proof::{PathProof, PathProofTerminal},
@@ -1016,7 +1126,10 @@ mod tests {
                 key_path.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling2],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+            ],
         };
 
         let multi_proof = MultiProof::from_path_proofs(vec![path_proof]);
@@ -1026,8 +1139,14 @@ mod tests {
             PathProofTerminal::Terminator(TriePosition::from_path_and_depth(key_path, 256))
         );
         assert_eq!(multi_proof.paths[0].depth, 2);
-        assert_eq!(multi_proof.siblings.len(), 2);
-        assert_eq!(multi_proof.siblings, vec![sibling1, sibling2]);
+        assert_eq!(multi_proof.sibling_chunks.len(), 2);
+        assert_eq!(
+            multi_proof.sibling_chunks,
+            vec!(
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2)
+            )
+        );
     }
 
     #[test]
@@ -1052,20 +1171,32 @@ mod tests {
                 key_path_1.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling2, sibling_x, sibling3, sibling4],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling_x),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling4),
+            ],
         };
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_2.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling2, sibling_x, sibling5, sibling6],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling_x),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling6),
+            ],
         };
 
         let multi_proof = MultiProof::from_path_proofs(vec![path_proof_1, path_proof_2]);
 
         assert_eq!(multi_proof.paths.len(), 2);
-        assert_eq!(multi_proof.siblings.len(), 6);
+        assert_eq!(multi_proof.sibling_chunks.len(), 6);
 
         assert_eq!(
             multi_proof.paths[0].terminal,
@@ -1080,8 +1211,15 @@ mod tests {
         assert_eq!(multi_proof.paths[1].depth, 5);
 
         assert_eq!(
-            multi_proof.siblings,
-            vec![sibling1, sibling2, sibling3, sibling4, sibling5, sibling6]
+            multi_proof.sibling_chunks,
+            vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling4),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling6)
+            ]
         );
     }
 
@@ -1093,30 +1231,31 @@ mod tests {
         let mut key_path_2 = [0; 32].to_vec();
         key_path_2[31] = 0b00000001;
 
-        let mut siblings_1: Vec<[u8; 32]> = (0..255).map(|i| [i; 32]).collect();
+        let mut siblings_1: Vec<SiblingChunk> =
+            (0..255).map(|i| SiblingChunk::Sibling([i; 32])).collect();
         let mut siblings_2 = siblings_1.clone();
-        siblings_1.push([b'2'; 32]);
-        siblings_2.push([b'1'; 32]);
+        siblings_1.push(SiblingChunk::Sibling([b'2'; 32]));
+        siblings_2.push(SiblingChunk::Sibling([b'1'; 32]));
 
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_1.clone(),
                 256,
             )),
-            siblings: siblings_1.clone(),
+            sibling_chunks: siblings_1.clone(),
         };
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_2.clone(),
                 256,
             )),
-            siblings: siblings_2,
+            sibling_chunks: siblings_2,
         };
 
         let multi_proof = MultiProof::from_path_proofs(vec![path_proof_1, path_proof_2]);
 
         assert_eq!(multi_proof.paths.len(), 2);
-        assert_eq!(multi_proof.siblings.len(), 255);
+        assert_eq!(multi_proof.sibling_chunks.len(), 255);
 
         assert_eq!(
             multi_proof.paths[0].terminal,
@@ -1131,7 +1270,7 @@ mod tests {
         assert_eq!(multi_proof.paths[1].depth, 256);
 
         siblings_1.pop();
-        assert_eq!(multi_proof.siblings, siblings_1);
+        assert_eq!(multi_proof.sibling_chunks, siblings_1);
     }
 
     #[test]
@@ -1174,7 +1313,10 @@ mod tests {
                 key_path_1.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling2],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+            ],
         };
 
         let path_proof_2 = PathProof {
@@ -1182,7 +1324,14 @@ mod tests {
                 key_path_2.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling3, sibling4, sibling5, sibling6, sibling7],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling4),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling6),
+                SiblingChunk::Sibling(sibling7),
+            ],
         };
 
         let path_proof_3 = PathProof {
@@ -1190,7 +1339,14 @@ mod tests {
                 key_path_3.clone(),
                 256,
             )),
-            siblings: vec![sibling1, sibling3, sibling4, sibling5, sibling8, sibling9],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling4),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling8),
+                SiblingChunk::Sibling(sibling9),
+            ],
         };
 
         let path_proof_4 = PathProof {
@@ -1198,8 +1354,13 @@ mod tests {
                 key_path_4.clone(),
                 256,
             )),
-            siblings: vec![
-                sibling10, sibling11, sibling12, sibling13, sibling14, sibling15,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling13),
+                SiblingChunk::Sibling(sibling14),
+                SiblingChunk::Sibling(sibling15),
             ],
         };
 
@@ -1208,8 +1369,13 @@ mod tests {
                 key_path_5.clone(),
                 256,
             )),
-            siblings: vec![
-                sibling10, sibling11, sibling12, sibling16, sibling17, sibling18,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling16),
+                SiblingChunk::Sibling(sibling17),
+                SiblingChunk::Sibling(sibling18),
             ],
         };
 
@@ -1218,7 +1384,13 @@ mod tests {
                 key_path_6.clone(),
                 256,
             )),
-            siblings: vec![sibling10, sibling11, sibling12, sibling16, sibling19],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling16),
+                SiblingChunk::Sibling(sibling19),
+            ],
         };
 
         let multi_proof = MultiProof::from_path_proofs(vec![
@@ -1231,7 +1403,7 @@ mod tests {
         ]);
 
         assert_eq!(multi_proof.paths.len(), 6);
-        assert_eq!(multi_proof.siblings.len(), 9);
+        assert_eq!(multi_proof.sibling_chunks.len(), 9);
 
         assert_eq!(
             multi_proof.paths[0].terminal,
@@ -1266,10 +1438,17 @@ mod tests {
         assert_eq!(multi_proof.paths[5].depth, 5);
 
         assert_eq!(
-            multi_proof.siblings,
+            multi_proof.sibling_chunks,
             vec![
-                sibling4, sibling5, sibling7, sibling9, sibling11, sibling12, sibling14, sibling15,
-                sibling18
+                SiblingChunk::Sibling(sibling4),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling7),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling14),
+                SiblingChunk::Sibling(sibling15),
+                SiblingChunk::Sibling(sibling18)
             ]
         );
     }
@@ -1318,32 +1497,56 @@ mod tests {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_0, 256,
             )),
-            siblings: vec![sibling1, sibling2, sibling3, sibling4, sibling5],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling4),
+                SiblingChunk::Sibling(sibling5),
+            ],
         };
 
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_1, 256,
             )),
-            siblings: vec![sibling1, sibling2, sibling3, sibling6, sibling7],
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling1),
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling6),
+                SiblingChunk::Sibling(sibling7),
+            ],
         };
 
         let path_proof_2 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_2, 256,
             )),
-            siblings: vec![
-                sibling8, sibling9, sibling10, sibling11, sibling12, sibling13, sibling14,
-                sibling15,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling8),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling13),
+                SiblingChunk::Sibling(sibling14),
+                SiblingChunk::Sibling(sibling15),
             ],
         };
         let path_proof_3 = PathProof {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_3, 256,
             )),
-            siblings: vec![
-                sibling8, sibling9, sibling10, sibling11, sibling12, sibling13, sibling16,
-                sibling17,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling8),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling11),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling13),
+                SiblingChunk::Sibling(sibling16),
+                SiblingChunk::Sibling(sibling17),
             ],
         };
 
@@ -1351,9 +1554,15 @@ mod tests {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_4, 256,
             )),
-            siblings: vec![
-                sibling8, sibling9, sibling10, sibling18, sibling19, sibling20, sibling21,
-                sibling22,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling8),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling18),
+                SiblingChunk::Sibling(sibling19),
+                SiblingChunk::Sibling(sibling20),
+                SiblingChunk::Sibling(sibling21),
+                SiblingChunk::Sibling(sibling22),
             ],
         };
 
@@ -1361,9 +1570,15 @@ mod tests {
             terminal: PathProofTerminal::Terminator(TriePosition::from_path_and_depth(
                 key_path_5, 256,
             )),
-            siblings: vec![
-                sibling8, sibling9, sibling10, sibling18, sibling19, sibling20, sibling23,
-                sibling24,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling(sibling8),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling18),
+                SiblingChunk::Sibling(sibling19),
+                SiblingChunk::Sibling(sibling20),
+                SiblingChunk::Sibling(sibling23),
+                SiblingChunk::Sibling(sibling24),
             ],
         };
 
@@ -1377,13 +1592,25 @@ mod tests {
         ]);
 
         assert_eq!(multi_proof.paths.len(), 6);
-        assert_eq!(multi_proof.siblings.len(), 14);
+        assert_eq!(multi_proof.sibling_chunks.len(), 14);
 
         assert_eq!(
-            multi_proof.siblings,
+            multi_proof.sibling_chunks,
             vec![
-                sibling2, sibling3, sibling5, sibling7, sibling9, sibling10, sibling12, sibling13,
-                sibling15, sibling17, sibling19, sibling20, sibling22, sibling24
+                SiblingChunk::Sibling(sibling2),
+                SiblingChunk::Sibling(sibling3),
+                SiblingChunk::Sibling(sibling5),
+                SiblingChunk::Sibling(sibling7),
+                SiblingChunk::Sibling(sibling9),
+                SiblingChunk::Sibling(sibling10),
+                SiblingChunk::Sibling(sibling12),
+                SiblingChunk::Sibling(sibling13),
+                SiblingChunk::Sibling(sibling15),
+                SiblingChunk::Sibling(sibling17),
+                SiblingChunk::Sibling(sibling19),
+                SiblingChunk::Sibling(sibling20),
+                SiblingChunk::Sibling(sibling22),
+                SiblingChunk::Sibling(sibling24)
             ]
         );
     }
@@ -1498,11 +1725,11 @@ mod tests {
 
         let path_proof_0 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_0.clone()),
-            siblings: vec![v1, v2],
+            sibling_chunks: vec![SiblingChunk::Sibling(v1), SiblingChunk::Sibling(v2)],
         };
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_1.clone()),
-            siblings: vec![s3],
+            sibling_chunks: vec![SiblingChunk::Sibling(s3)],
         };
 
         let multi_proof =
@@ -1570,11 +1797,11 @@ mod tests {
 
         let path_proof_0 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_0.clone()),
-            siblings: vec![v1, v2],
+            sibling_chunks: vec![SiblingChunk::Sibling(v1), SiblingChunk::Sibling(v2)],
         };
         let path_proof_1 = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_1.clone()),
-            siblings: vec![s3],
+            sibling_chunks: vec![SiblingChunk::Sibling(s3)],
         };
 
         let multi_proof =
@@ -1673,26 +1900,54 @@ mod tests {
 
         let path_proof_a = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_a.clone()),
-            siblings: vec![
-                [1; 32], [2; 32], [3; 32], [4; 32], i5b, [6; 32], [7; 32], l8b,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling([1; 32]),
+                SiblingChunk::Sibling([2; 32]),
+                SiblingChunk::Sibling([3; 32]),
+                SiblingChunk::Sibling([4; 32]),
+                SiblingChunk::Sibling(i5b),
+                SiblingChunk::Sibling([6; 32]),
+                SiblingChunk::Sibling([7; 32]),
+                SiblingChunk::Sibling(l8b),
             ],
         };
         let path_proof_b = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_b.clone()),
-            siblings: vec![
-                [1; 32], [2; 32], [3; 32], [4; 32], i5b, [6; 32], [7; 32], l8a,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling([1; 32]),
+                SiblingChunk::Sibling([2; 32]),
+                SiblingChunk::Sibling([3; 32]),
+                SiblingChunk::Sibling([4; 32]),
+                SiblingChunk::Sibling(i5b),
+                SiblingChunk::Sibling([6; 32]),
+                SiblingChunk::Sibling([7; 32]),
+                SiblingChunk::Sibling(l8a),
             ],
         };
         let path_proof_c = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_c.clone()),
-            siblings: vec![
-                [1; 32], [2; 32], [3; 32], [4; 32], i5a, [6; 32], [7; 32], l8d,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling([1; 32]),
+                SiblingChunk::Sibling([2; 32]),
+                SiblingChunk::Sibling([3; 32]),
+                SiblingChunk::Sibling([4; 32]),
+                SiblingChunk::Sibling(i5b),
+                SiblingChunk::Sibling([6; 32]),
+                SiblingChunk::Sibling([7; 32]),
+                SiblingChunk::Sibling(l8d),
             ],
         };
         let path_proof_d = PathProof {
             terminal: PathProofTerminal::Leaf(leaf_d.clone()),
-            siblings: vec![
-                [1; 32], [2; 32], [3; 32], [4; 32], i5a, [6; 32], [7; 32], l8c,
+            sibling_chunks: vec![
+                SiblingChunk::Sibling([1; 32]),
+                SiblingChunk::Sibling([2; 32]),
+                SiblingChunk::Sibling([3; 32]),
+                SiblingChunk::Sibling([4; 32]),
+                SiblingChunk::Sibling(i5b),
+                SiblingChunk::Sibling([6; 32]),
+                SiblingChunk::Sibling([7; 32]),
+                SiblingChunk::Sibling(l8c),
             ],
         };
 
@@ -1791,17 +2046,58 @@ mod tests {
 
         let root = internal_hash(i3, i6, &[], 0);
 
-        let leaf_proof = |leaf, siblings| PathProof {
+        let leaf_proof = |leaf, sibling_chunks| PathProof {
             terminal: PathProofTerminal::Leaf(leaf),
-            siblings,
+            sibling_chunks,
         };
 
-        let path_proof_0 = leaf_proof(l0.clone(), vec![i6, TERMINATOR, v2, v1]);
-        let path_proof_1 = leaf_proof(l1.clone(), vec![i6, TERMINATOR, v2, v0]);
-        let path_proof_2 = leaf_proof(l2.clone(), vec![i6, TERMINATOR, i1]);
-        let path_proof_3 = leaf_proof(l3.clone(), vec![i3, i5]);
-        let path_proof_4 = leaf_proof(l4.clone(), vec![i3, v3, v5, TERMINATOR]);
-        let path_proof_5 = leaf_proof(l5.clone(), vec![i3, v3, i4]);
+        let path_proof_0 = leaf_proof(
+            l0.clone(),
+            vec![
+                SiblingChunk::Sibling(i6),
+                SiblingChunk::Sibling(TERMINATOR),
+                SiblingChunk::Sibling(v2),
+                SiblingChunk::Sibling(v1),
+            ],
+        );
+        let path_proof_1 = leaf_proof(
+            l1.clone(),
+            vec![
+                SiblingChunk::Sibling(i6),
+                SiblingChunk::Sibling(TERMINATOR),
+                SiblingChunk::Sibling(v2),
+                SiblingChunk::Sibling(v0),
+            ],
+        );
+        let path_proof_2 = leaf_proof(
+            l2.clone(),
+            vec![
+                SiblingChunk::Sibling(i6),
+                SiblingChunk::Sibling(TERMINATOR),
+                SiblingChunk::Sibling(i1),
+            ],
+        );
+        let path_proof_3 = leaf_proof(
+            l3.clone(),
+            vec![SiblingChunk::Sibling(i3), SiblingChunk::Sibling(i5)],
+        );
+        let path_proof_4 = leaf_proof(
+            l4.clone(),
+            vec![
+                SiblingChunk::Sibling(i3),
+                SiblingChunk::Sibling(v3),
+                SiblingChunk::Sibling(v5),
+                SiblingChunk::Sibling(TERMINATOR),
+            ],
+        );
+        let path_proof_5 = leaf_proof(
+            l5.clone(),
+            vec![
+                SiblingChunk::Sibling(i3),
+                SiblingChunk::Sibling(v3),
+                SiblingChunk::Sibling(i4),
+            ],
+        );
 
         let multi_proof = MultiProof::from_path_proofs(vec![
             path_proof_0.clone(),
@@ -1895,15 +2191,61 @@ mod tests {
 
         let root = internal_hash(v0, i10, &[], 0);
 
-        let leaf_proof = |leaf, siblings| PathProof {
+        let leaf_proof = |leaf, sibling_chunks| PathProof {
             terminal: PathProofTerminal::Leaf(leaf),
-            siblings,
+            sibling_chunks,
         };
 
-        let path_proof_1 = leaf_proof(l1.clone(), vec![v0, e7, e6, i7, e3, e2, e1, v2]);
-        let path_proof_2 = leaf_proof(l2.clone(), vec![v0, e7, e6, i7, e3, e2, e1, v1]);
-        let path_proof_3 = leaf_proof(l3.clone(), vec![v0, e7, e6, i4, e5, e4, v4]);
-        let path_proof_4 = leaf_proof(l4.clone(), vec![v0, e7, e6, i4, e5, e4, v3]);
+        let path_proof_1 = leaf_proof(
+            l1.clone(),
+            vec![
+                SiblingChunk::Sibling(v0),
+                SiblingChunk::Sibling(e7),
+                SiblingChunk::Sibling(e6),
+                SiblingChunk::Sibling(i7),
+                SiblingChunk::Sibling(e3),
+                SiblingChunk::Sibling(e2),
+                SiblingChunk::Sibling(e1),
+                SiblingChunk::Sibling(v2),
+            ],
+        );
+        let path_proof_2 = leaf_proof(
+            l2.clone(),
+            vec![
+                SiblingChunk::Sibling(v0),
+                SiblingChunk::Sibling(e7),
+                SiblingChunk::Sibling(e6),
+                SiblingChunk::Sibling(i7),
+                SiblingChunk::Sibling(e3),
+                SiblingChunk::Sibling(e2),
+                SiblingChunk::Sibling(e1),
+                SiblingChunk::Sibling(v1),
+            ],
+        );
+        let path_proof_3 = leaf_proof(
+            l3.clone(),
+            vec![
+                SiblingChunk::Sibling(v0),
+                SiblingChunk::Sibling(e7),
+                SiblingChunk::Sibling(e6),
+                SiblingChunk::Sibling(i4),
+                SiblingChunk::Sibling(e5),
+                SiblingChunk::Sibling(e4),
+                SiblingChunk::Sibling(v4),
+            ],
+        );
+        let path_proof_4 = leaf_proof(
+            l4.clone(),
+            vec![
+                SiblingChunk::Sibling(v0),
+                SiblingChunk::Sibling(e7),
+                SiblingChunk::Sibling(e6),
+                SiblingChunk::Sibling(i4),
+                SiblingChunk::Sibling(e5),
+                SiblingChunk::Sibling(e4),
+                SiblingChunk::Sibling(v3),
+            ],
+        );
 
         let multi_proof = MultiProof::from_path_proofs(vec![
             path_proof_1.clone(),
@@ -1912,7 +2254,19 @@ mod tests {
             path_proof_4.clone(),
         ]);
 
-        assert_eq!(multi_proof.siblings, vec![v0, e7, e6, e3, e2, e1, e5, e4]);
+        assert_eq!(
+            multi_proof.sibling_chunks,
+            vec![
+                SiblingChunk::Sibling(v0),
+                SiblingChunk::Sibling(e7),
+                SiblingChunk::Sibling(e6),
+                SiblingChunk::Sibling(e3),
+                SiblingChunk::Sibling(e2),
+                SiblingChunk::Sibling(e1),
+                SiblingChunk::Sibling(e5),
+                SiblingChunk::Sibling(e4)
+            ]
+        );
 
         let verified = verify::<Blake3Hasher>(&multi_proof, root).unwrap();
         assert!(verified.confirm_value(&l1.key_path, l1.value_hash).unwrap());
@@ -1967,13 +2321,13 @@ mod tests {
         let vmp_prefix = VerifiedMultiPath {
             terminal: PathProofTerminal::Leaf(leaf_prefix.clone()),
             depth: bits_prefix.len(),
-            unique_siblings: 0..0, // Minimal example
+            unique_chunks: 0..0, // Minimal example
         };
 
         let vmp_longer = VerifiedMultiPath {
             terminal: PathProofTerminal::Leaf(leaf_longer.clone()),
             depth: bits_longer.len(),
-            unique_siblings: 0..0, // Minimal example
+            unique_chunks: 0..0, // Minimal example
         };
 
         // Create a plausible root for the test setup.
@@ -1992,7 +2346,7 @@ mod tests {
 
             bisections: Vec::new(), // Minimal example
 
-            siblings: Vec::new(), // Minimal example
+            sibling_chunks: Vec::new(), // Minimal example
 
             root: plausible_root,
         };

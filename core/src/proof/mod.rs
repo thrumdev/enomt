@@ -13,8 +13,9 @@ pub use multi_proof::{
     MultiProof, MultiProofVerificationError, VerifiedMultiProof,
 };
 pub use path_proof::{
-    verify_update, KeyOutOfScope, PathProof, PathProofTerminal, PathProofVerificationError,
-    PathUpdate, VerifiedPathProof, VerifyUpdateError,
+    compact_siblings, sibling_chunks_depth, verify_update, KeyOutOfScope, PathProof,
+    PathProofTerminal, PathProofVerificationError, PathUpdate, SiblingChunk, VerifiedPathProof,
+    VerifyUpdateError,
 };
 
 mod multi_proof;

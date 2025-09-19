@@ -70,6 +70,62 @@ impl PathProofTerminal {
     }
 }
 
+/// A chunk of siblings encountered traversing the trie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SiblingChunk {
+    /// A unique sibling node within the trie
+    Sibling(Node),
+    /// A chunk of terminator nodes that can be represented
+    /// by the number of bits it covers.
+    Terminators(usize),
+}
+
+impl SiblingChunk {
+    /// Extract the node associated with the chunk.
+    pub fn node(&self) -> Node {
+        match self {
+            SiblingChunk::Sibling(node) => *node,
+            SiblingChunk::Terminators(_) => trie::TERMINATOR,
+        }
+    }
+
+    /// Extract how many layers are covered by the chunk.
+    pub fn covered_layers(&self) -> usize {
+        match self {
+            SiblingChunk::Sibling(_) => 1,
+            SiblingChunk::Terminators(layers) => *layers,
+        }
+    }
+
+    /// Attempt to compact the next node with the previous one. Returns Ok
+    /// if successful, otherwise, return the provided SiblingChunk as an error.
+    pub fn try_comapct(&mut self, next: SiblingChunk) -> Result<(), SiblingChunk> {
+        if self.node() == next.node() {
+            *self = SiblingChunk::Terminators(self.covered_layers() + next.covered_layers());
+            Ok(())
+        } else {
+            Err(next)
+        }
+    }
+
+    /// Consumes the SiblingChunk, returning the node that was stored within the chunk
+    /// and optionally the SiblingChunk left from the starting one.
+    pub fn consume(self) -> (Node, Option<Self>) {
+        match self {
+            SiblingChunk::Sibling(node) => (node, None),
+            SiblingChunk::Terminators(layers) if layers == 1 => (TERMINATOR, None),
+            SiblingChunk::Terminators(layers) => {
+                (TERMINATOR, Some(SiblingChunk::Terminators(layers - 1)))
+            }
+        }
+    }
+}
+
 /// A proof of some particular path through the trie.
 #[derive(Debug, Clone)]
 #[cfg_attr(
@@ -82,7 +138,39 @@ pub struct PathProof {
     /// leaf.
     pub terminal: PathProofTerminal,
     /// Sibling nodes encountered during lookup, in descending order by depth.
-    pub siblings: Vec<Node>,
+    pub sibling_chunks: Vec<SiblingChunk>,
+}
+
+/// Given a vector of `SiblingChunk`s, return a compacted version where every
+/// sequence of Terminators is collected within the same SiblingChunk.
+pub fn compact_siblings(sibling_chunks: Vec<SiblingChunk>) -> Vec<SiblingChunk> {
+    let mut compact_siblings = vec![];
+
+    for sibling_chunk in sibling_chunks {
+        if compact_siblings.is_empty() {
+            compact_siblings.push(sibling_chunk);
+            continue;
+        }
+
+        // UNWRAP: compact_siblings has just been checked to not be empty.
+        let last_sibling_chunk = compact_siblings.last_mut().unwrap();
+
+        match last_sibling_chunk.try_comapct(sibling_chunk) {
+            Err(sibling_chunk) => compact_siblings.push(sibling_chunk),
+            // Do nothing, sibling has been compacted.
+            Ok(()) => (),
+        }
+    }
+
+    compact_siblings
+}
+
+/// Given a vector of `SiblingChunk`s sum all covered layers.
+pub fn sibling_chunks_depth(sibling_chunks: &[SiblingChunk]) -> usize {
+    sibling_chunks
+        .iter()
+        .map(|chunk| chunk.covered_layers())
+        .sum()
 }
 
 impl PathProof {
@@ -99,12 +187,14 @@ impl PathProof {
         key_path: &BitSlice<u8, Msb0>,
         root: Node,
     ) -> Result<VerifiedPathProof, PathProofVerificationError> {
-        if self.siblings.len() > key_path.len() {
+        let siblings_len = sibling_chunks_depth(&self.sibling_chunks);
+
+        if siblings_len > key_path.len() {
             return Err(PathProofVerificationError::TooManySiblings);
         }
 
         let mut relevant_path = key_path.to_bitvec();
-        relevant_path.resize_with(self.siblings.len(), |_| false);
+        relevant_path.resize_with(siblings_len, |_| false);
 
         if let Some(collision_ops) = self.terminal.collision_ops() {
             let collision_subtree_root = collisions::build_subtrie::<H>(
@@ -124,7 +214,7 @@ impl PathProof {
         let new_root = hash_path::<H>(
             cur_node,
             &relevant_path,
-            self.siblings.iter().rev().cloned(),
+            self.sibling_chunks.iter().rev().cloned(),
         );
 
         if new_root == root {
@@ -139,7 +229,7 @@ impl PathProof {
             Ok(VerifiedPathProof {
                 key_path: relevant_path.into(),
                 terminal,
-                siblings: self.siblings.clone(),
+                sibling_chunks: self.sibling_chunks.clone(),
                 root,
                 collision_data,
             })
@@ -149,30 +239,43 @@ impl PathProof {
     }
 }
 
-/// Given a node, a path, and a set of siblings, hash up to the root and return it.
-/// This only consumes the last `siblings.len()` bits of the path, or the whole path.
+/// Given a node, a path, and a set of sibling chunks, hash up to the root and return it.
+/// This only consumes the last `sibling_chunks.len()` bits of the path, or the whole path.
 /// Siblings are in ascending order from the last bit of `path`.
 pub fn hash_path<H: NodeHasher>(
     mut node: Node,
     path: &BitSlice<u8, Msb0>,
-    siblings: impl IntoIterator<Item = Node>,
+    sibling_chunks: impl IntoIterator<Item = SiblingChunk>,
 ) -> Node {
-    let path_len = path.len();
-    for (counter, (bit, sibling)) in path.iter().by_vals().rev().zip(siblings).enumerate() {
+    let mut path_iter = path.iter().by_vals().rev();
+    let mut depth = path.len();
+    for chunk in sibling_chunks {
+        let mut covered_bits = chunk.covered_layers();
+        covered_bits -= 1;
+
+        // UNWRAP: path is not expected to be shorter than the amount of siblings
+        // contained in sibling_chunks.
+        let bit = path_iter.next().unwrap();
+
         let (left, right) = if bit {
-            (sibling, node)
+            (chunk.node(), node)
         } else {
-            (node, sibling)
+            (node, chunk.node())
         };
 
         let next = InternalData {
             left: left.clone(),
             right: right.clone(),
         };
-        let depth = path_len - counter - 1;
-        node = H::hash_internal(&next, &path[..depth]);
-    }
 
+        node = H::hash_internal(&next, &path[..depth - 1]);
+
+        // Advance the path iterator by the amount of covered bits.
+        depth -= covered_bits + 1;
+        for _ in 0..covered_bits {
+            path_iter.next();
+        }
+    }
     node
 }
 
@@ -206,7 +309,7 @@ pub struct VerifiedPathProof {
     key_path: BitVec<u8, Msb0>,
     terminal: Option<LeafData>,
     collision_data: Option<Vec<(u16, ValueHash)>>,
-    siblings: Vec<Node>,
+    sibling_chunks: Vec<SiblingChunk>,
     root: Node,
 }
 
@@ -406,6 +509,7 @@ pub fn verify_update<H: NodeHasher>(
             collision_data
                 .iter()
                 .map(|(key_len, v)| {
+                    // UNWRAP: If there is collision data, the terminal is expected to be a leaf.
                     let mut key_path = leaf.as_ref().unwrap().key_path.clone();
                     key_path.resize_with(*key_len as usize, || 0);
                     (key_path, *v)
@@ -429,19 +533,55 @@ pub fn verify_update<H: NodeHasher>(
             bit_path.resize_with(up_layers, |_| false);
         }
 
-        for (bit, sibling) in bit_path
-            .iter()
-            .by_vals()
-            .rev()
-            .take(up_layers)
-            .zip(path.inner.siblings.iter().rev())
-        {
+        let mut bit_path_iter = bit_path.iter().by_vals().rev().take(up_layers);
+        let mut sibling_chunks_iter = path.inner.sibling_chunks.iter().cloned().rev();
+        let mut last_sibling_chunk: Option<SiblingChunk> = None;
+
+        let mut cunsume_sibling = |chunk: &mut Option<SiblingChunk>| -> Option<Node> {
+            if chunk.is_none() {
+                *chunk = sibling_chunks_iter.next();
+            }
+            let Some(last_chunk) = chunk.take() else {
+                return None;
+            };
+            let (node, last_chunk) = last_chunk.consume();
+            *chunk = last_chunk;
+            Some(node)
+        };
+
+        while cur_layer > end_layer {
             let sibling = if pending_siblings.last().map_or(false, |p| p.1 == cur_layer) {
-                // unwrap: checked above
+                cunsume_sibling(&mut last_sibling_chunk);
+                // UNWRAP: checked above
                 pending_siblings.pop().unwrap().0
             } else {
-                *sibling
+                match last_sibling_chunk.as_mut() {
+                    Some(SiblingChunk::Terminators(remaining_layers)) if *remaining_layers > 0 => {
+                        let next_depth = std::cmp::max(
+                            pending_siblings.last().map(|p| p.1).unwrap_or(end_layer),
+                            end_layer,
+                        );
+                        let delta_layer = cur_layer - next_depth;
+                        let covered_by_sibling = std::cmp::min(*remaining_layers, delta_layer);
+
+                        *remaining_layers -= covered_by_sibling;
+                        cur_layer -= covered_by_sibling;
+
+                        for _ in 0..covered_by_sibling {
+                            bit_path_iter.next();
+                        }
+
+                        last_sibling_chunk = None;
+                        continue;
+                    }
+                    // UNWRAP: There must be a sibling to consume if it is not taken from
+                    // the pending ones.
+                    _ => cunsume_sibling(&mut last_sibling_chunk).unwrap(),
+                }
             };
+
+            // UNWRAP: There must be a bit within the bitpath if the end_layer is not reached.
+            let bit = bit_path_iter.next().unwrap();
 
             match (NodeKind::of::<H>(&cur_node), NodeKind::of::<H>(&sibling)) {
                 (NodeKind::Terminator, NodeKind::Terminator) => {}
