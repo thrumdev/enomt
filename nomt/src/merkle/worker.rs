@@ -14,8 +14,8 @@ use crossbeam::channel::{Receiver, Select, TryRecvError};
 
 use nomt_core::{
     page_id::ROOT_PAGE_ID,
-    proof::PathProofTerminal,
-    trie::{KeyPath, Node, ValueHash},
+    proof::{compact_siblings, PathProofTerminal, SiblingChunk},
+    trie::{self, KeyPath, Node, ValueHash},
 };
 
 use std::{
@@ -374,7 +374,7 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
                     inner: PathProof {
                         // if the terminal lands in the non-exclusive area, then the path to it is
                         // guaranteed not to have been altered by anything we've done so far.
-                        siblings: seek_result.siblings,
+                        sibling_chunks: compact_siblings(seek_result.sibling_chunks),
                         terminal: match seek_result.terminal.clone() {
                             Some(leaf_data) if leaf_data.collision => {
                                 // UNWRAP: CollisionLeaf exepects collision_ops to be present.
@@ -439,18 +439,50 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
         };
 
         if let Some(ref mut witnessed_paths) = output.witnessed_paths {
-            let siblings = {
-                // nodes may have been altered prior to seeking - the page walker tracks which ones.
-                let mut siblings = seek_result.siblings;
-                for (actual_sibling, depth) in self.page_walker.siblings() {
-                    siblings[*depth - 1] = *actual_sibling;
+            // nodes may have been altered prior to seeking - the page walker tracks which ones.
+            let mut sibling_chunks = seek_result.sibling_chunks;
+
+            let actual_siblings = self.page_walker.siblings();
+            let mut depth = 0;
+            let mut sibling_chunks_iter = sibling_chunks.iter_mut();
+            for (actual_sibling, actual_sibling_depth) in actual_siblings {
+                loop {
+                    // UNWRAP: All actual siblings are expected to replace a sibling
+                    // among those already collected.
+                    let chunk = sibling_chunks_iter.next().unwrap();
+
+                    depth += chunk.covered_layers();
+
+                    // Terminator chunks are never expected to be substituted
+                    // because they are collected by the seeker while traversing jump pages,
+                    // which are not updated until completely traversed again.
+                    // This implies that it can never happen for a seeker to read
+                    // an updated jump page.
+                    if depth == *actual_sibling_depth {
+                        match chunk {
+                            SiblingChunk::Sibling(sibling_node) => {
+                                *sibling_node = *actual_sibling;
+                            }
+                            SiblingChunk::Terminators(_) => {
+                                assert_eq!(*actual_sibling, trie::TERMINATOR);
+                            }
+                        }
+                        break;
+                    } else if depth > *actual_sibling_depth {
+                        // If an actual sibling is part of a terminators chunk,
+                        // it must also be a terminator node.
+                        assert_eq!(*actual_sibling, trie::TERMINATOR);
+                        assert_eq!(chunk.node(), trie::TERMINATOR);
+                        break;
+                    }
                 }
-                siblings
-            };
+            }
+
+            let sibling_chunks = compact_siblings(sibling_chunks);
 
             let path = WitnessedPath {
                 inner: PathProof {
-                    siblings,
+                    sibling_chunks,
                     terminal: match seek_result.terminal.clone() {
                         Some(leaf_data) if leaf_data.collision => {
                             // UNWRAP: CollisionLeaf exepects collision_ops to be present.

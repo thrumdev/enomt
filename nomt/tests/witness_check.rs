@@ -3,7 +3,7 @@ mod common;
 use common::Test;
 use nomt::{
     hasher::Blake3Hasher,
-    proof::{self, MultiProof},
+    proof::{self, MultiProof, SiblingChunk},
     trie::LeafData,
     Root, Witness, WitnessedPath,
 };
@@ -443,6 +443,226 @@ fn multiproof_with_collision_keys() {
         proof::verify_multi_proof_update::<Blake3Hasher>(&verified_multi_proof, updates).unwrap(),
         new_root.into_inner(),
     );
+}
+
+#[test]
+fn construct_multiproof_with_sibling_chunks_split() {
+    let mut t = Test::new("multiproof_split_sibling_chunks");
+
+    let k1 = vec![0, 0];
+    let k2 = vec![0, 32];
+    let k3 = vec![4];
+
+    let (prev_root, _) = {
+        t.write(k1.clone(), Some(vec![1]));
+        t.write(k2.clone(), Some(vec![2]));
+        t.commit()
+    };
+
+    let (_new_root, witness) = {
+        t.read(k1);
+        t.read(k3);
+        t.commit()
+    };
+
+    assert_eq!(witness.operations.reads.len(), 2);
+    assert_eq!(witness.operations.writes.len(), 0);
+
+    let mut path_proofs: Vec<_> = witness
+        .path_proofs
+        .into_iter()
+        .map(|WitnessedPath { inner, .. }| inner)
+        .collect();
+    path_proofs.sort_by(|p1, p2| p1.terminal.path().cmp(p2.terminal.path()));
+
+    let multi_proof = MultiProof::from_path_proofs(path_proofs);
+    let verified_multi_proof =
+        nomt_core::proof::verify_multi_proof::<Blake3Hasher>(&multi_proof, prev_root.into_inner())
+            .unwrap();
+    println!("multiproof creted");
+
+    for read in witness.operations.reads {
+        let index = verified_multi_proof.find_index_for(&read.key).unwrap();
+        assert_eq!(index, read.path_index);
+
+        match read.value {
+            None => {
+                assert!(verified_multi_proof
+                    .confirm_nonexistence(&read.key)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_nonexistence_with_index(&read.key, index)
+                    .unwrap());
+            }
+            Some(ref v) => {
+                let leaf = LeafData {
+                    key_path: read.key.clone(),
+                    value_hash: *v,
+                    collision: false,
+                };
+                assert!(verified_multi_proof
+                    .confirm_value(&leaf.key_path, leaf.value_hash)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_value_with_index(&leaf.key_path, leaf.value_hash, index)
+                    .unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn multiproof_in_between_sibling_chunks() {
+    let mut t = Test::new("witness_with_split_of_covered_bits");
+
+    let k1 = vec![3; 900];
+    let mut k2 = k1.clone();
+    *k2.last_mut().unwrap() += 1;
+    let k3 = vec![3; 200];
+    let mut k4 = vec![3; 400];
+    *k4.last_mut().unwrap() = 4;
+    let k5 = vec![3; 500];
+    let mut k6 = vec![3; 650];
+    *k6.last_mut().unwrap() = 128;
+
+    let (prev_root, _) = {
+        t.write(k1.clone(), Some(vec![1]));
+        t.write(k2.clone(), Some(vec![2]));
+        t.commit()
+    };
+
+    let (new_root, witness) = {
+        t.read(k1);
+        t.read(k3);
+        t.read(k4);
+        t.write(k5.clone(), Some(vec![3]));
+        t.write(k6.clone(), Some(vec![4]));
+        t.commit()
+    };
+
+    assert_eq!(witness.operations.reads.len(), 3);
+    assert_eq!(witness.operations.writes.len(), 2);
+
+    let mut path_proofs: Vec<_> = witness
+        .path_proofs
+        .into_iter()
+        .map(|WitnessedPath { inner, .. }| inner)
+        .collect();
+    path_proofs.sort_by(|p1, p2| p1.terminal.path().cmp(p2.terminal.path()));
+
+    let multi_proof = MultiProof::from_path_proofs(path_proofs);
+    let verified_multi_proof =
+        nomt_core::proof::verify_multi_proof::<Blake3Hasher>(&multi_proof, prev_root.into_inner())
+            .unwrap();
+
+    for read in witness.operations.reads {
+        let index = verified_multi_proof.find_index_for(&read.key).unwrap();
+        assert_eq!(index, read.path_index);
+
+        match read.value {
+            None => {
+                assert!(verified_multi_proof
+                    .confirm_nonexistence(&read.key)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_nonexistence_with_index(&read.key, index)
+                    .unwrap());
+            }
+            Some(ref v) => {
+                let leaf = LeafData {
+                    key_path: read.key.clone(),
+                    value_hash: *v,
+                    collision: false,
+                };
+                assert!(verified_multi_proof
+                    .confirm_value(&leaf.key_path, leaf.value_hash)
+                    .unwrap());
+                assert!(verified_multi_proof
+                    .confirm_value_with_index(&leaf.key_path, leaf.value_hash, index)
+                    .unwrap());
+            }
+        }
+    }
+
+    let updates: Vec<_> = witness
+        .operations
+        .writes
+        .into_iter()
+        .map(|w| (w.key, w.value))
+        .collect();
+
+    assert_eq!(
+        proof::verify_multi_proof_update::<Blake3Hasher>(&verified_multi_proof, updates).unwrap(),
+        new_root.into_inner(),
+    );
+}
+
+#[test]
+fn sibling_collection() {
+    let mut t = Test::new("sibling_collection");
+
+    let k1 = vec![3; 100];
+    let mut k2 = k1.clone();
+    *k2.last_mut().unwrap() += 1;
+
+    let mut k3 = vec![3; 50];
+    *k3.last_mut().unwrap() = 0;
+
+    let mut k4 = vec![3; 75];
+    *k4.last_mut().unwrap() += 1;
+
+    let (_, _) = {
+        t.write(k1.clone(), Some(vec![1]));
+        t.write(k2.clone(), Some(vec![2]));
+        t.commit()
+    };
+
+    let (_, witness) = {
+        t.write(k3, Some(vec![3]));
+        t.write(k4, Some(vec![4]));
+        t.read(k1);
+        t.commit()
+    };
+
+    assert_eq!(witness.operations.reads.len(), 1);
+    assert_eq!(witness.operations.writes.len(), 2);
+
+    let mut path_proofs: Vec<_> = witness
+        .path_proofs
+        .into_iter()
+        .map(|WitnessedPath { inner, .. }| inner)
+        .collect();
+    path_proofs.sort_by(|p1, p2| p1.terminal.path().cmp(p2.terminal.path()));
+
+    dbg!(&path_proofs[1].sibling_chunks);
+    dbg!(&path_proofs[2].sibling_chunks);
+
+    assert!(matches!(
+        path_proofs[0].sibling_chunks[0],
+        SiblingChunk::Terminators(398)
+    ));
+    assert!(matches!(
+        path_proofs[0].sibling_chunks[1],
+        SiblingChunk::Sibling(..)
+    ));
+
+    assert!(matches!(
+        path_proofs[1].sibling_chunks[0],
+        SiblingChunk::Terminators(797)
+    ));
+    assert!(matches!(
+        path_proofs[1].sibling_chunks[1],
+        SiblingChunk::Sibling(..)
+    ));
+
+    assert!(matches!(
+        path_proofs[2].sibling_chunks[0],
+        SiblingChunk::Terminators(597)
+    ));
+    assert!(matches!(
+        path_proofs[2].sibling_chunks[1],
+        SiblingChunk::Sibling(..)
+    ));
 }
 
 #[test]

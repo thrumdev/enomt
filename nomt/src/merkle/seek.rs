@@ -24,6 +24,7 @@ use nomt_core::{
     collisions,
     page::DEPTH,
     page_id::{PageId, ROOT_PAGE_ID},
+    proof::SiblingChunk,
     trie::{self, KeyPath, Node, ValueHash},
     trie_pos::TriePosition,
 };
@@ -42,7 +43,7 @@ struct SeekRequest {
     key: KeyPath,
     position: TriePosition,
     page_id: Option<PageId>,
-    siblings: Vec<Node>,
+    sibling_chunks: Vec<SiblingChunk>,
     collision_ops: Option<Vec<(KeyPath, ValueHash)>>,
     state: RequestState,
     ios: usize,
@@ -69,7 +70,7 @@ impl SeekRequest {
             key,
             position: TriePosition::new(),
             page_id: None,
-            siblings: Vec::new(),
+            sibling_chunks: Vec::new(),
             collision_ops: None,
             state,
             ios: 0,
@@ -161,7 +162,9 @@ impl SeekRequest {
 
             let cur_node = page.node(self.position.node_index());
             if record_siblings {
-                self.siblings.push(page.node(self.position.sibling_index()));
+                self.sibling_chunks.push(SiblingChunk::Sibling(
+                    page.node(self.position.sibling_index()),
+                ));
             }
 
             if trie::is_leaf::<H>(&cur_node) {
@@ -240,9 +243,11 @@ impl SeekRequest {
             }
 
             if record_siblings {
-                self.siblings
-                    .extend(std::iter::repeat(trie::TERMINATOR).take(divergence_bit_idx));
-                self.siblings.push(jump_node);
+                if divergence_bit_idx != 0 {
+                    self.sibling_chunks
+                        .push(SiblingChunk::Terminators(divergence_bit_idx));
+                }
+                self.sibling_chunks.push(SiblingChunk::Sibling(jump_node));
             }
 
             self.state = RequestState::Completed(None);
@@ -260,8 +265,8 @@ impl SeekRequest {
             .map(|destination| destination.parent_page_id());
 
         if record_siblings {
-            self.siblings
-                .extend(std::iter::repeat(trie::TERMINATOR).take(partial_path.len()));
+            self.sibling_chunks
+                .push(SiblingChunk::Terminators(partial_path.len()));
         }
 
         for bit in partial_path {
@@ -714,7 +719,7 @@ impl<H: HashAlgorithm> Seeker<H> {
                 key: request.key,
                 position: request.position,
                 page_id: request.page_id,
-                siblings: request.siblings,
+                sibling_chunks: request.sibling_chunks,
                 collision_ops: request.collision_ops,
                 ios: request.ios,
                 terminal,
@@ -1040,7 +1045,7 @@ pub struct Seek {
     pub page_id: Option<PageId>,
     /// The siblings along the path to the terminal, including the terminal's sibling.
     /// Empty if the seeker wasn't configured to record siblings.
-    pub siblings: Vec<Node>,
+    pub sibling_chunks: Vec<SiblingChunk>,
     /// Store all the operations that collide with this Seek.
     pub collision_ops: Option<Vec<(Vec<u8>, [u8; 32])>>,
     /// The terminal node encountered.

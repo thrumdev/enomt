@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use nomt_core::{
     page::DEPTH,
     page_id::{ChildPageIndex, PageId},
-    proof::{PathProof, PathProofTerminal},
+    proof::{compact_siblings, PathProof, PathProofTerminal},
     trie::{self, KeyPath, Node, ValueHash},
     trie_pos::TriePosition,
 };
@@ -386,7 +386,7 @@ impl Updater {
 
         Ok(PathProof {
             terminal,
-            siblings: found.siblings,
+            sibling_chunks: compact_siblings(found.sibling_chunks),
         })
     }
 }
