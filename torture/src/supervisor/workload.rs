@@ -905,8 +905,8 @@ impl Workload {
             }
             keys_size += change.key().len();
 
-            // Stop adding changes to the commit if we exceed 90% of MAX_ENVELOPE_SIZE.
-            if (sum_value_size + keys_size) as f64 / MAX_ENVELOPE_SIZE as f64 > 0.8 {
+            // Stop adding changes to the commit if we exceed 75% of MAX_ENVELOPE_SIZE.
+            if (sum_value_size + keys_size) as f64 / MAX_ENVELOPE_SIZE as f64 > 0.75 {
                 break;
             }
 
@@ -954,9 +954,9 @@ impl Workload {
         let used_keys_len = used_keys.len();
 
         let mut find_new_key = |rng: &mut rand_pcg::Pcg64| -> Key {
-            let key_len = rng.gen_range(1..1024);
-            let mut key = vec![0; key_len];
             loop {
+                let key_len = rng.gen_range(1..1024);
+                let mut key = vec![0; key_len];
                 rng.fill_bytes(&mut key);
                 if !self.committed.state.contains_key(&key) && new_keys.insert(key.clone()) {
                     return key;

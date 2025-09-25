@@ -15,7 +15,7 @@
 ///
 /// | n | prefix | [(cell_offset ++ key_len); n] | ----  | [key ++ value; n] |
 ///
-/// Where key a byte array smaller than MAX_KEY_LEN bytes, and cell_offset is the byte offset in the node
+/// Where key is a byte array smaller than MAX_KEY_LEN bytes, and cell_offset is the byte offset in the node
 /// to the beginning of the the cell.
 ///
 /// Cell pointers are saved in order of the key, and consequently, so are the cells.

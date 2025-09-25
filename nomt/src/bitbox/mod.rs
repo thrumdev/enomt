@@ -496,9 +496,11 @@ fn recover(
 
                 // Label the page with its hash.
                 page[HASH_RANGE].copy_from_slice(&page_id_hash.to_le_bytes());
+                // Label the page as jump or clear it of any potential trash.
                 if jump {
-                    // Label the page as jump.
                     page[TAG_RANGE].copy_from_slice(&JUMP_TAG);
+                } else {
+                    page[TAG_RANGE].copy_from_slice(&[0; 4]);
                 }
                 // Write elided children bitfield.
                 page[ELIDED_CHILDREN_RANGE].copy_from_slice(&elided_children.to_bytes());
