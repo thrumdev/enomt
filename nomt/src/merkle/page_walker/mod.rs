@@ -184,7 +184,8 @@ impl PendingJump {
             &mut page,
             &mut page_diff,
             node,
-            None,
+            0,
+            true, /* jump */
             &self.bit_path[..DEPTH],
         );
 
@@ -321,24 +322,24 @@ impl PendingJumps {
         match maybe_jump_node {
             // Fill the split page up to the jump_node_layers with the jump node,
             // if it is a valid internal node.
-            Some(jump_node) => {
-                let jump_node_layers = if trie::is_internal::<H>(&jump_node) {
-                    up - second_half_bit_path.len()
-                } else {
-                    // NOTE: this is only required because the page walker needs to be able to
-                    // walk towards terminators for non-existing reads. This implies that
-                    // the pending jump could be split while cleared to save the previous
-                    // valid sibling. To make this possible without having a heavily specialized
-                    // case for something pretty rare, a page that will be discarded later on will
-                    // just be cleared from trash.
-                    0
-                };
-
+            Some(node) => {
+                // The split page needs to be filled differently depending on whether the node is internal.
+                // Both share a portion of the fill logic, there is a destination at which the node should be written.
+                // Between the start of the page and the destination, terminators should be placed.
+                // If the node is a jump node, it will be used as the node, otherwise, terminators will be placed
+                // in between the destination and the end of the page.
+                //
+                // The first part, between the beginning of the page and the destination, requires terminators
+                // because the page walker needs to traverse the path, and terminators are expected to be found
+                // for non-existent reads.
+                let jump_node_layers = up - second_half_bit_path.len();
+                let destination_depth = DEPTH + 1 - jump_node_layers;
                 fill_transparent_hash_page(
                     &mut split_page,
                     &mut split_page_diff,
-                    jump_node,
-                    Some(jump_node_layers),
+                    node,
+                    destination_depth,
+                    trie::is_internal::<H>(&node),
                     &split_page_jump_bit_path[..DEPTH],
                 );
             }
@@ -2367,14 +2368,16 @@ impl<H: NodeHasher> PageWalker<H> {
         {
             assert_eq!(pending_jump.start_page_id, prev_jump_page_id);
 
-            let maybe_bucket_info = jump_page_origin.clone().bucket_info();
-            if elided_pending_jump && !self.reconstruction && maybe_bucket_info.is_some() {
-                push_cleared_page(
-                    self,
-                    prev_jump_page,
-                    prev_jump_page_id,
-                    jump_page_origin.bucket_info(),
-                );
+            if elided_pending_jump && !self.reconstruction {
+                let maybe_bucket_info = jump_page_origin.clone().bucket_info();
+                if maybe_bucket_info.is_some() {
+                    push_cleared_page(
+                        self,
+                        prev_jump_page,
+                        prev_jump_page_id,
+                        jump_page_origin.bucket_info(),
+                    );
+                }
                 return;
             }
 
@@ -2407,6 +2410,7 @@ impl<H: NodeHasher> PageWalker<H> {
         const JUMP_PAGE_THRESHOLD: usize = 12;
         if pending_jump.bit_path.len() < JUMP_PAGE_THRESHOLD {
             let mut page_id = pending_jump.start_page_id.clone();
+            let last_unpacked_page_id = pending_jump.destination_page_id.parent_page_id();
 
             for chunk in pending_jump.bit_path.chunks_exact(DEPTH) {
                 let mut page = page_set.fresh();
@@ -2419,18 +2423,21 @@ impl<H: NodeHasher> PageWalker<H> {
                     _ => PageDiff::default(),
                 };
 
-                fill_transparent_hash_page(&mut page, &mut diff, node, None, chunk);
-
-                // NOTE: it could never happen that the destination page is elided
-                // but not the jump page, because the jump do not introduce any new leaf.
-                //
-                // This imply that if `elided_pending_jump` than a chain of elided pages is required.
+                fill_transparent_hash_page(
+                    &mut page, &mut diff, node, 0, true, /*jump*/
+                    chunk,
+                );
 
                 // UNWRAP: 6 bits never overflows child page index
                 let child_index = ChildPageIndex::new(chunk.load_be::<u8>()).unwrap();
 
+                // All pages from the first to the second-to-last one will elide the child
+                // if the pending jump itself is being elided. The last unpacked page
+                // will store the elided children data of the pending jump.
                 let mut elided_children = ElidedChildren::new();
-                if elided_pending_jump {
+                if page_id == last_unpacked_page_id {
+                    elided_children = pending_jump.elision_data.elided_children.clone();
+                } else if elided_pending_jump {
                     elided_children.set_elide(child_index.clone(), true);
                 };
                 page.set_elided_children(&elided_children);
@@ -2528,14 +2535,19 @@ fn count_leaves<H: NodeHasher>(page: &PageMut) -> u64 {
     counter
 }
 
-// Starting from the bottom follow the path placing `node` in each position
-// and terminators in each sibling, if specified after `up_to` only place terminators
-// following the path.
+// Starting from the bottom follow the path placing:
+// + `node` or `terminator` in each position up to destination
+//   `node` if jump is true, otherwise `terminator`
+// + place `node` at the destination position
+// + continue to follow the path placing terminators
+//
+// All siblings of each placed node will be terminators.
 fn fill_transparent_hash_page(
     page: &mut PageMut,
     page_diff: &mut PageDiff,
     node: Node,
-    up_to: Option<usize>,
+    destination: usize,
+    jump: bool,
     bit_path: &BitSlice<u8, Msb0>,
 ) {
     assert_eq!(bit_path.len(), 6);
@@ -2544,12 +2556,19 @@ fn fill_transparent_hash_page(
         let node_index = pos.node_index();
         let sibling_index = pos.sibling_index();
 
-        let node = match up_to {
-            Some(up_to) if depth_in_page <= DEPTH - up_to => trie::TERMINATOR,
-            _ => node,
+        let node_to_write = if depth_in_page > destination {
+            if jump {
+                node
+            } else {
+                trie::TERMINATOR
+            }
+        } else if depth_in_page == destination {
+            node
+        } else {
+            trie::TERMINATOR
         };
 
-        page.set_node(node_index, node);
+        page.set_node(node_index, node_to_write);
         page.set_node(sibling_index, trie::TERMINATOR);
         page_diff.set_changed(node_index);
         page_diff.set_changed(sibling_index);
