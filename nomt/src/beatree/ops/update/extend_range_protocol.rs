@@ -83,7 +83,7 @@ pub fn try_answer_left_neighbor<Node>(
         .iter()
         .take_while(|(key, entry)| {
             if let Some(ref low) = separator {
-                if low < key {
+                if low < *key {
                     found_unchanged_range = true;
                     new_high_range = Some((**key).clone());
                     return false;
