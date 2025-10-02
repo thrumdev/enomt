@@ -31,7 +31,7 @@ parking_lot = { version = "0.12.3", features = ["arc_lock", "send_guard"] }
 threadpool = "1.8.1"
 twox-hash = "2.1.0"
 fxhash = "0.2.1"
-dashmap = "5.5.3"
+dashmap = "5.5.1"
 crossbeam = "0.8.4"
 crossbeam-channel = "0.5.13"
 slab = "0.4.9"
