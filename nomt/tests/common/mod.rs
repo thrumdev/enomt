@@ -125,6 +125,14 @@ impl Test {
         }
     }
 
+    pub fn iterator(
+        &mut self,
+        start: KeyPath,
+        end: Option<KeyPath>,
+    ) -> impl Iterator<Item = (KeyPath, nomt::Value)> {
+        self.session.as_mut().unwrap().iterator(start, end)
+    }
+
     pub fn commit(&mut self) -> (Root, Witness) {
         let session = mem::take(&mut self.session).unwrap();
         let mut actual_access: Vec<_> = mem::take(&mut self.access).into_iter().collect();
