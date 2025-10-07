@@ -537,8 +537,8 @@ struct ReadTransactionInner {
 }
 
 impl ReadTransaction {
-    /// Create a new iterator with the given half-open start and end range.
-    pub fn iterator(&self, start: Key, end: Option<Key>) -> BeatreeIterator {
+    /// Create a new raw iterator with the given half-open start and end range.
+    pub fn raw_iterator(&self, start: Key, end: Option<Key>) -> BeatreeIterator {
         BeatreeIterator::new(
             self.inner.primary_staging.clone(),
             self.inner.secondary_staging.clone(),
@@ -546,6 +546,14 @@ impl ReadTransaction {
             start,
             end,
         )
+    }
+
+    pub fn iterator(self, io_pool: &IoPool, start: Key, end: Option<Key>) -> KeyValueIterator {
+        KeyValueIterator {
+            io_handle: io_pool.make_handle(),
+            iterator: self.raw_iterator(start, end),
+            read_tx: self,
+        }
     }
 
     /// Initiate an asynchronous leaf page fetch. This may return immediately if the leaf is cached.
@@ -631,6 +639,46 @@ impl ReadTransaction {
 impl Drop for ReadTransactionInner {
     fn drop(&mut self) {
         self.read_counter.release_one()
+    }
+}
+
+/// Iterator over Key-Value pairs.
+pub struct KeyValueIterator {
+    read_tx: ReadTransaction,
+    iterator: BeatreeIterator,
+    io_handle: IoHandle,
+}
+
+impl Iterator for KeyValueIterator {
+    type Item = (Key, crate::Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iterator.next() {
+            Some(iterator::IterOutput::Blocked) => {
+                let leaf = match self.read_tx.load_leaf_async(
+                    self.iterator.needed_leaves().next().unwrap(),
+                    &self.io_handle,
+                    0,
+                ) {
+                    Ok(leaf_node) => leaf_node,
+                    Err(leaf_load) => {
+                        // UNWRAP: `Err` indicates a request was sent.
+                        let complete_io = self.io_handle.recv().unwrap();
+
+                        // UNWRAP: the I/O command submitted by `load_leaf_async` is always a `Read`
+                        leaf_load.finish(complete_io.command.kind.unwrap_buf())
+                    }
+                };
+                self.iterator.provide_leaf(leaf);
+                self.next()
+            }
+            Some(iterator::IterOutput::Item(key, val)) => Some((key, val.to_vec())),
+            Some(iterator::IterOutput::OverflowItem(key, _value_hash, overflow_cell)) => {
+                let val = overflow::read_blocking(overflow_cell, &self.read_tx.inner.leaf_store);
+                Some((key, val))
+            }
+            None => None,
+        }
     }
 }
 

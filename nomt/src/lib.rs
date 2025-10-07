@@ -20,6 +20,7 @@ use page_cache::PageCache;
 use parking_lot::{ArcRwLockReadGuard, Mutex, RwLock};
 use store::{Store, ValueTransaction};
 
+pub use beatree::KeyValueIterator;
 pub use io::IoUringPermission;
 pub use nomt_core::hasher;
 pub use nomt_core::proof;
@@ -517,6 +518,14 @@ impl<T> Session<T> {
         self.store.load_value(path)
     }
 
+    /// Synchronously iterate over all key-value pairs from the specified start key
+    /// up to the specified end key, if provided.
+    pub fn iterator(&mut self, start: KeyPath, end: Option<KeyPath>) -> KeyValueIterator {
+        self.store
+            .read_transaction()
+            .iterator(self.store.io_pool(), start, end)
+    }
+
     /// Returns the [`Root`] at which this session is based off of.
     pub fn prev_root(&self) -> Root {
         self.prev_root
@@ -903,7 +912,7 @@ fn compute_root_node<H: HashAlgorithm>(page_cache: &PageCache, store: &Store) ->
 
     // cases 1/2
     let read_tx = store.read_transaction();
-    let mut iterator = read_tx.iterator(vec![0], None);
+    let mut iterator = read_tx.raw_iterator(vec![0], None);
 
     let io_handle = store.io_pool().make_handle();
 

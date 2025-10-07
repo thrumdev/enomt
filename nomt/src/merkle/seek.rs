@@ -524,7 +524,7 @@ impl RequestState {
         }
 
         // Fall back to iterator (most likely).
-        let beatree_iterator = read_transaction.iterator(start, end);
+        let beatree_iterator = read_transaction.raw_iterator(start, end);
         let needed_leaves = beatree_iterator.needed_leaves();
         RequestState::FetchingLeaf {
             beatree_iterator,
@@ -539,7 +539,7 @@ impl RequestState {
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
-        let beatree_iterator = read_transaction.iterator(start.clone(), end.clone());
+        let beatree_iterator = read_transaction.raw_iterator(start.clone(), end.clone());
         let needed_leaves = beatree_iterator.needed_leaves();
         RequestState::FetchingLeaves {
             page: Some(page),
@@ -557,7 +557,7 @@ impl RequestState {
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
-        let beatree_iterator = read_transaction.iterator(start.clone(), end.clone());
+        let beatree_iterator = read_transaction.raw_iterator(start.clone(), end.clone());
         let needed_leaves = beatree_iterator.needed_leaves();
         RequestState::FetchingLeaves {
             page: None,
