@@ -2090,6 +2090,11 @@ impl<H: NodeHasher> PageWalker<H> {
             }
 
             if self.reconstruction {
+                if elision_data.children_leaves_counter.is_none()
+                    && elision_data.prev_children_leaves_counter.is_none()
+                {
+                    panic!("coming from handle_traversed_page first 2 layer pages");
+                }
                 self.push_reconstructed(diff, page_id, page, &elision_data);
             } else {
                 self.push_updated(diff, page_id, page, bucket_info, &elision_data);
@@ -2115,6 +2120,11 @@ impl<H: NodeHasher> PageWalker<H> {
         // this page gets promoted to be stored on disk,
         // we don't want to recompute which child is elided.
         if self.reconstruction {
+            if elision_data.children_leaves_counter.is_none()
+                && elision_data.prev_children_leaves_counter.is_none()
+            {
+                panic!("coming from handle_traversed_page after first 2 layers");
+            }
             self.push_reconstructed(diff, page_id, page, &elision_data);
             return;
         }
@@ -2349,6 +2359,11 @@ impl<H: NodeHasher> PageWalker<H> {
             pending_jump = shorter_pending_jump;
 
             if self.reconstruction {
+                if elision_data.children_leaves_counter.is_none()
+                    && elision_data.prev_children_leaves_counter.is_none()
+                {
+                    panic!("coming from handle_pending_jump first 2 layers");
+                }
                 self.push_reconstructed(page_diff, page_id, page, &elision_data);
             } else {
                 self.push_updated(page_diff, page_id, page, bucket_info, &elision_data);
@@ -2475,6 +2490,14 @@ impl<H: NodeHasher> PageWalker<H> {
         page.tag_jump_page(node, pending_jump.bit_path);
 
         if self.reconstruction {
+            if pending_jump.elision_data.children_leaves_counter.is_none()
+                && pending_jump
+                    .elision_data
+                    .prev_children_leaves_counter
+                    .is_none()
+            {
+                panic!("coming from handle_pending_jump after first 2 layers");
+            }
             self.push_reconstructed(
                 diff,
                 pending_jump.start_page_id,
