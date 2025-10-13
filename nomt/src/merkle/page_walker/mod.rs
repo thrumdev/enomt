@@ -284,6 +284,7 @@ impl PendingJumps {
         find_by: FindBy,
         up: usize,
         parent_elision_data: Option<&mut ElisionData>,
+        inherit_elision_data: bool,
     ) -> SplitJumpResult {
         // UNWRAP: The specified jump is expected to be present.
         let jump_idx = self.find_pending_jump_mut(page_id, find_by).unwrap();
@@ -348,8 +349,8 @@ impl PendingJumps {
 
         let mut split_page_elision_data = jump.elision_data.clone();
         if split_page_elision_data.children_leaves_counter == Some(0) {
-            // If the current pending jumps have a modified children_leaves_counter,
-            // let's erase it back for the new split page.
+            // If the current pending jump has no modified children_leaves_counter,
+            // let's erase it for the new split page.
             split_page_elision_data.children_leaves_counter = None;
             assert!(split_page_elision_data
                 .prev_children_leaves_counter
@@ -363,19 +364,25 @@ impl PendingJumps {
             split_page_elision_data.elided_children = ElidedChildren::new();
         }
 
-        // A chain of transparent hash does not add any leaf thus
-        // children_leaves_counter and prev_children_leaves_counter remains the same.
-        let children_leaves_counter = jump.elision_data.children_leaves_counter;
-        let prev_children_leaves_counter = jump.elision_data.prev_children_leaves_counter;
+        // A chain of transparent hashes does not add any leaves, thus
+        // children_leaves_counter and prev_children_leaves_counter are moved or copied
+        // children_leaves_counter and prev_children_leaves_counter are moved or copied
+        // from the jump to the split page id, depending on inherit_elision_data.
+        let (children_leaves_counter, prev_children_leaves_counter) = if inherit_elision_data {
+            (
+                jump.elision_data.children_leaves_counter,
+                jump.elision_data.prev_children_leaves_counter,
+            )
+        } else {
+            (None, Some(0))
+        };
 
-        // Substitute the current jump elision data with a fresh one and use
-        // them for the second half PendingJump.
         let elision_data = std::mem::replace(
             &mut jump.elision_data,
             ElisionData {
                 page_leaves_counter: None,
-                prev_children_leaves_counter,
-                children_leaves_counter,
+                prev_children_leaves_counter: Some(0),
+                children_leaves_counter: None,
                 elided_children: ElidedChildren::new(),
                 reconstruction_diff: None,
             },
@@ -401,7 +408,7 @@ impl PendingJumps {
                 bit_path: second_half_bit_path,
                 jumped_pages: vec![],
                 elision_data,
-                node: maybe_jump_node.clone(),
+                node: maybe_jump_node,
                 source: None,
             })
         } else {
@@ -995,6 +1002,7 @@ impl<H: NodeHasher> PageWalker<H> {
             FindBy::Destination,
             up,
             parent_elision_data,
+            false, /*inherit_elision_data */
         ) {
             SplitJumpResult::Skip(jump_len) => {
                 let jump_idx = parent_pending_jumps
@@ -1649,6 +1657,7 @@ impl<H: NodeHasher> PageWalker<H> {
             FindBy::Destination,
             *compact_layers,
             parent_elision_data,
+            true, /*inherit_elision_data */
         ) {
             SplitJumpResult::Split {
                 split_page_id,
@@ -2008,6 +2017,7 @@ impl<H: NodeHasher> PageWalker<H> {
                 FindBy::Start,
                 up,
                 Some(&mut stack_top.elision_data),
+                true, /*inherit_elision_data */
             )
             else {
                 // PANIC: A jump split is expected to happen.
