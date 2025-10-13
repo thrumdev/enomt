@@ -767,62 +767,61 @@ fn count_leaves() {
     }
 }
 
-// TODO: this require the first two pages to be a jump page thus it
-// must be uncommended once jump pages are properly read
-//#[test]
-//fn count_cumulative_leaves() {
-//let root = trie::TERMINATOR;
-//let mut page_set = MockPageSet::default();
-//
-//// Build pages in the first two layers.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//walker.set_inhibit_elision();
-//
-//#[rustfmt::skip]
-//walker.advance_and_replace(
-//&page_set,
-//TriePosition::new(),
-//vec![
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0], val(1),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1], val(2),),
-//],
-//);
-//
-//let Output::Root(root, updates) = walker.conclude(&page_set) else {
-//unreachable!();
-//};
-//
-//page_set.apply(updates);
-//
-//// Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//#[rustfmt::skip]
-//walker.advance_and_replace(
-//&page_set,
-//trie_pos![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-//vec![
-//// [8, 8, 8, 16] 2 leaves
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], val(1),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], val(2),),
-//
-//// [8, 8, 8, 17] 3 leaves
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0], val(3),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0], val(3),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1], val(4),),
-//
-//// [8, 8, 8] 1 leaf
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1], val(5),),
-//
-//// [8, 8, 8, 49] 3 leaves
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0], val(6),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0], val(7),),
-//(key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1], val(8),),
-//],
-//);
-//
-//let stack_top = walker.stack.last_mut().unwrap().e.parent_page_id()lision_data_mut();
-//assert_eq!(stack_top.children_leaves_counter, Some(9));
-//}
+#[test]
+fn count_cumulative_leaves() {
+    let root = trie::TERMINATOR;
+    let mut page_set = MockPageSet::default();
+
+    // Build pages in the first two layers.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+    walker.set_inhibit_elision();
+
+    #[rustfmt::skip]
+    walker.advance_and_replace(
+        &page_set,
+        TriePosition::new(),
+        vec![
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0], val(1),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1], val(2),),
+        ],
+    );
+
+    let Output::Root(root, updates) = walker.conclude(&page_set) else {
+        unreachable!();
+    };
+
+    page_set.apply(updates);
+
+    // Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+    #[rustfmt::skip]
+    walker.advance_and_replace(
+        &page_set,
+        trie_pos![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+        vec![
+            // [8, 8, 8, 16] 2 leaves
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], val(1),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], val(2),),
+
+            // [8, 8, 8, 17] 3 leaves
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0], val(3),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0], val(3),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1], val(4),),
+
+            // [8, 8, 8] 1 leaf
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1], val(5),),
+
+            // [8, 8, 8, 49] 3 leaves
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0], val(6),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0], val(7),),
+            (key_path![0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1], val(8),),
+        ],
+    );
+
+    let stack_top = walker.stack.last().unwrap();
+    println!("stack_top page id {:?}", stack_top.page_id);
+    assert_eq!(stack_top.elision_data.children_leaves_counter, Some(9));
+}
 
 #[test]
 fn cumulative_delta_leaves() {
@@ -942,196 +941,192 @@ fn cumulative_delta_leaves() {
     assert_eq!(stack_top.children_leaves_counter, Some(6));
 }
 
-// TODO: this require the first two pages to be a jump page thus it
-// must be uncommended once jump pages are properly read
-//#[test]
-//fn cumulative_delta_children() {
-//let root = trie::TERMINATOR;
-//let mut page_set = MockPageSet::default();
-//
-//// Build pages in the first two layers.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//
-//#[rustfmt::skip]
-//let ops = vec![
-//// [21, 21] 1 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0], val(1),),
-////(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(2),),
-//
-//// [21, 21, 21, 0] 4 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], val(2),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], val(3),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0], val(4),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1], val(4),),
-//
-//// [21, 21, 21] 1 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(8),),
-//
-//// [21, 21, 21, 63] 3 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], val(5),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1], val(6),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1], val(7),),
-//];
-//
-//walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
-//
-//let Output::Root(root, updates) = walker.conclude(&page_set) else {
-//unreachable!();
-//};
-//page_set.apply(updates);
-//
-//let page_id = PageId::decode(&[21]).unwrap();
-//let (page, _) = page_set.get(&page_id).unwrap();
-//let position = trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
-//let maybe_pages =
-//super::reconstruct_pages::<Blake3Hasher>(&page, page_id, position, &mut page_set, ops);
-//
-//if let Some(pages) = maybe_pages {
-//for (page_id, page, diff, page_leaves_counter, children_leaves_counter) in pages {
-//page_set.reconstructed.insert(
-//page_id,
-//(
-//page,
-//PageOrigin::Reconstructed {
-//page_leaves_counter,
-//children_leaves_counter,
-//diff,
-//},
-//),
-//);
-//}
-//}
-//
-//// Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//#[rustfmt::skip]
-//walker.advance_and_replace(
-//&page_set,
-//// [21, 21, 21, 0] 3 leaves
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0],
-//vec![],
-//);
-//#[rustfmt::skip]
-//walker.advance_and_replace(
-//&page_set,
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
-//vec![
-//// [21, 21, 21] 2 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0], val(11),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1], val(12),),
-//],
-//);
-//#[rustfmt::skip]
-//walker.advance_and_replace(
-//&page_set,
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
-//vec![
-//// [21, 21, 21, 63] 5 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0], val(11),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1 ,0], val(12),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1], val(12),),
-//],
-//);
-//#[rustfmt::skip]
-//walker.advance(
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
-//&page_set
-//);
-//
-//let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
-//assert_eq!(stack_top.children_leaves_counter, Some(10));
-//}
+#[test]
+fn cumulative_delta_children() {
+    let root = trie::TERMINATOR;
+    let mut page_set = MockPageSet::default();
 
-// TODO: this require the first two pages to be a jump page thus it
-// must be uncommended once jump pages are properly read
-//#[test]
-//fn delete_chain_of_elided_pages() {
-//let root = trie::TERMINATOR;
-//let mut page_set = MockPageSet::default();
-//
-//// Build pages in the first two layers.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//
-//#[rustfmt::skip]
-//let ops = vec![
-//// [21, 21] 1 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0], val(1),),
-//
-//// [21, 21, 21, 21, 0] 4 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], val(2),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], val(3),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0], val(4),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1], val(4),),
-//
-//// [21, 21, 21, 21] 1 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(8),),
-//
-//// [21, 21, 21, 21, 63] 3 leaves
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], val(5),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1], val(6),),
-//(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1], val(7),),
-//];
-//
-//walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
-//
-//let Output::Root(root, updates) = walker.conclude(&page_set) else {
-//unreachable!();
-//};
-//page_set.apply(updates);
-//
-//let page_id = PageId::decode(&[21]).unwrap();
-//let (page, _) = page_set.get(&page_id).unwrap();
-//let position = trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
-//let maybe_pages =
-//super::reconstruct_pages::<Blake3Hasher>(&page, page_id, position, &mut page_set, ops);
-//
-//if let Some(pages) = maybe_pages {
-//for (page_id, page, diff, page_leaves_counter, children_leaves_counter) in pages {
-//page_set.reconstructed.insert(
-//page_id,
-//(
-//page,
-//PageOrigin::Reconstructed {
-//page_leaves_counter,
-//children_leaves_counter,
-//diff,
-//},
-//),
-//);
-//}
-//}
-//
-//// Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
-//let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
-//let mut delete_leaf = |trie_pos| {
-//walker.advance_and_replace(&page_set, trie_pos, vec![]);
-//};
-//
-//#[rustfmt::skip]
-//let leaf_positions = vec![
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-//];
-//
-//for trie_pos in leaf_positions {
-//delete_leaf(trie_pos);
-//}
-//
-//#[rustfmt::skip]
-//walker.advance(
-//trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
-//&page_set
-//);
-//
-//let stack_top = walker.stack.last_mut().unwrap().elision_data_mut();
-//assert_eq!(stack_top.children_leaves_counter, Some(0));
-//}
+    // Build pages in the first two layers.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+
+    #[rustfmt::skip]
+    let ops = vec![
+        // [21, 21] 1 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0], val(1),),
+        //(key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(2),),
+
+        // [21, 21, 21, 0] 4 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], val(2),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], val(3),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0], val(4),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1], val(4),),
+
+        // [21, 21, 21] 1 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(8),),
+
+        // [21, 21, 21, 63] 3 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], val(5),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1], val(6),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1], val(7),),
+    ];
+
+    walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
+
+    let Output::Root(root, updates) = walker.conclude(&page_set) else {
+        unreachable!();
+    };
+    page_set.apply(updates);
+
+    let page_id = PageId::decode(&[21]).unwrap();
+    let (page, _) = page_set.get(&page_id).unwrap();
+    let position = trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
+    let maybe_pages =
+        super::reconstruct_pages::<Blake3Hasher>(&page, page_id, position, &mut page_set, ops);
+
+    if let Some(pages) = maybe_pages {
+        for (page_id, page, diff, page_leaves_counter, children_leaves_counter) in pages {
+            page_set.reconstructed.insert(
+                page_id,
+                (
+                    page,
+                    PageOrigin::Reconstructed {
+                        page_leaves_counter,
+                        children_leaves_counter,
+                        diff,
+                    },
+                ),
+            );
+        }
+    }
+
+    // Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+    #[rustfmt::skip]
+    walker.advance_and_replace(
+        &page_set,
+        // [21, 21, 21, 0] 3 leaves
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0],
+        vec![],
+    );
+    #[rustfmt::skip]
+    walker.advance_and_replace(
+        &page_set,
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        vec![
+            // [21, 21, 21] 2 leaves
+            (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0], val(11),),
+            (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1], val(12),),
+        ],
+    );
+    #[rustfmt::skip]
+    walker.advance_and_replace(
+        &page_set,
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+        vec![
+            // [21, 21, 21, 63] 5 leaves
+            (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0], val(11),),
+            (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1 ,0], val(12),),
+            (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1], val(12),),
+        ],
+    );
+    #[rustfmt::skip]
+    walker.advance(
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+        &page_set
+    );
+
+    let stack_top = walker.stack.last_mut().unwrap();
+    assert_eq!(stack_top.elision_data.children_leaves_counter, Some(10));
+}
+
+#[test]
+fn delete_chain_of_elided_pages() {
+    let root = trie::TERMINATOR;
+    let mut page_set = MockPageSet::default();
+
+    // Build pages in the first two layers.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+
+    #[rustfmt::skip]
+    let ops = vec![
+        // [21, 21] 1 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0], val(1),),
+
+        // [21, 21, 21, 21, 0] 4 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], val(2),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], val(3),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0], val(4),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1], val(4),),
+
+        // [21, 21, 21, 21] 1 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], val(8),),
+
+        // [21, 21, 21, 21, 63] 3 leaves
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], val(5),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1], val(6),),
+        (key_path![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1], val(7),),
+    ];
+
+    walker.advance_and_replace(&page_set, TriePosition::new(), ops.clone());
+
+    let Output::Root(root, updates) = walker.conclude(&page_set) else {
+        unreachable!();
+    };
+    page_set.apply(updates);
+
+    let page_id = PageId::decode(&[21]).unwrap();
+    let (page, _) = page_set.get(&page_id).unwrap();
+    let position = trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
+    let maybe_pages =
+        super::reconstruct_pages::<Blake3Hasher>(&page, page_id, position, &mut page_set, ops);
+
+    if let Some(pages) = maybe_pages {
+        for (page_id, page, diff, page_leaves_counter, children_leaves_counter) in pages {
+            page_set.reconstructed.insert(
+                page_id,
+                (
+                    page,
+                    PageOrigin::Reconstructed {
+                        page_leaves_counter,
+                        children_leaves_counter,
+                        diff,
+                    },
+                ),
+            );
+        }
+    }
+
+    // Construct leaves in multiple pages and make sure the parent page's leaves counter has been updated correctly.
+    let mut walker = PageWalker::<Blake3Hasher>::new(root, None);
+    let mut delete_leaf = |trie_pos| {
+        walker.advance_and_replace(&page_set, trie_pos, vec![]);
+    };
+
+    #[rustfmt::skip]
+    let leaf_positions = vec![
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    ];
+
+    for trie_pos in leaf_positions {
+        delete_leaf(trie_pos);
+    }
+
+    #[rustfmt::skip]
+    walker.advance(
+        trie_pos![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],
+        &page_set
+    );
+
+    let stack_top = walker.stack.last_mut().unwrap();
+    assert_eq!(stack_top.elision_data.children_leaves_counter, Some(0));
+}
 
 #[test]
 fn reconstruct_pages() {

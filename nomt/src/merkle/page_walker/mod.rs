@@ -259,9 +259,9 @@ impl PendingJumps {
             ..
         } = self.jumps.remove(idx);
 
+        // Removing a pending jump needs to propagate the already counted number of children leaves.
         let Some(children_leaves_counter) = parent_elision_data
-            .map(|elision_data| elision_data.children_leaves_counter.as_mut())
-            .flatten()
+            .map(|elision_data| elision_data.children_leaves_counter.get_or_insert(0))
         else {
             return;
         };
@@ -346,15 +346,29 @@ impl PendingJumps {
             _ => (),
         }
 
+        // A chain of transparent hashes does not add any leaves, but given the fact that
+        // the split always occurs after propagating the elision data to the pending jump,
+        // it means that the split page will not contain any new leaves in its children.
+        // The only information that will be added is the page delta, thus the leaves that will
+        // be added within the split page.
+        //
+        // This means that the current pending jump will keep the same leaves_counter,
+        // only extracting the elided_children field that will be moved to the split page.
+        // Meanwhile, the split page will store the pending jump's children_leaves_counter value
+        // in the children_leaves_counter and prev_children_leaves_counter.
         let mut split_page_elision_data = jump.elision_data.clone();
-        if split_page_elision_data.children_leaves_counter == Some(0) {
-            // If the current pending jumps have a modified children_leaves_counter,
-            // let's erase it back for the new split page.
-            split_page_elision_data.children_leaves_counter = None;
-            assert!(split_page_elision_data
-                .prev_children_leaves_counter
-                .is_some());
-        }
+        jump.elision_data.elided_children = ElidedChildren::new();
+        match &split_page_elision_data.children_leaves_counter {
+            Some(leaves) if *leaves > 0 => {
+                split_page_elision_data.prev_children_leaves_counter =
+                    split_page_elision_data.children_leaves_counter;
+            }
+            Some(leaves) if *leaves == 0 => {
+                split_page_elision_data.children_leaves_counter = None;
+                split_page_elision_data.prev_children_leaves_counter = Some(0);
+            }
+            _ => (),
+        };
 
         // If there is a second pending jump after the split page, then
         // the elided_children is not inherited and remains only associated
@@ -362,24 +376,6 @@ impl PendingJumps {
         if !second_half_bit_path.is_empty() {
             split_page_elision_data.elided_children = ElidedChildren::new();
         }
-
-        // A chain of transparent hash does not add any leaf thus
-        // children_leaves_counter and prev_children_leaves_counter remains the same.
-        let children_leaves_counter = jump.elision_data.children_leaves_counter;
-        let prev_children_leaves_counter = jump.elision_data.prev_children_leaves_counter;
-
-        // Substitute the current jump elision data with a fresh one and use
-        // them for the second half PendingJump.
-        let elision_data = std::mem::replace(
-            &mut jump.elision_data,
-            ElisionData {
-                page_leaves_counter: None,
-                prev_children_leaves_counter,
-                children_leaves_counter,
-                elided_children: ElidedChildren::new(),
-                reconstruction_diff: None,
-            },
-        );
 
         // Clear the current PendingJump if the split occurred within the
         // staring page. Otherwise update destination and bit_path.
@@ -400,8 +396,18 @@ impl PendingJumps {
                 destination_page_id: second_half_destination_page_id,
                 bit_path: second_half_bit_path,
                 jumped_pages: vec![],
-                elision_data,
-                node: maybe_jump_node.clone(),
+                elision_data: ElisionData {
+                    page_leaves_counter: None,
+                    children_leaves_counter: split_page_elision_data.children_leaves_counter,
+                    prev_children_leaves_counter: split_page_elision_data
+                        .prev_children_leaves_counter,
+                    elided_children: std::mem::replace(
+                        &mut split_page_elision_data.elided_children,
+                        ElidedChildren::new(),
+                    ),
+                    reconstruction_diff: None,
+                },
+                node: maybe_jump_node,
                 source: None,
             })
         } else {
