@@ -148,6 +148,23 @@ impl Test {
         (root, witness)
     }
 
+    pub fn commit_actual(
+        &mut self,
+        actual_access: Vec<(KeyPath, KeyReadWrite)>,
+    ) -> (Root, Witness) {
+        let session = mem::take(&mut self.session).unwrap();
+
+        let mut finished = session.finish(actual_access).unwrap();
+        let root = finished.root();
+        let witness = finished.take_witness().unwrap();
+        finished.commit(&self.nomt).unwrap();
+        self.session = Some(
+            self.nomt
+                .begin_session(SessionParams::default().witness_mode(WitnessMode::read_write())),
+        );
+        (root, witness)
+    }
+
     pub fn update(&mut self) -> (Overlay, Witness) {
         let session = mem::take(&mut self.session).unwrap();
         let mut actual_access: Vec<_> = mem::take(&mut self.access).into_iter().collect();
