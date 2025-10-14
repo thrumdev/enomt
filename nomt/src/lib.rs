@@ -69,7 +69,7 @@ struct Shared {
 }
 
 /// Whether a key was read, written, or both, along with old and new values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyReadWrite {
     /// The key was read. Contains the read value.
     Read(Option<Value>),
