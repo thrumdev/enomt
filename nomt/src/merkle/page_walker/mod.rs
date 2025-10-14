@@ -494,12 +494,30 @@ impl StackPageItem {
         &mut self,
         child_page_id: &PageId,
         find_by: FindBy,
+        dbg_text: &mut Vec<String>,
     ) -> &mut ElisionData {
         match self
             .pending_jumps
             .find_pending_jump_mut(child_page_id, find_by)
         {
-            Some(idx) => &mut self.pending_jumps.jumps[idx].elision_data,
+            Some(idx) => {
+                dbg_text.push("found pending jump".to_string());
+                //if self.pending_jumps.jumps[idx].start_page_id
+                //== PageId::decode(&[
+                //51, 44, 20, 7, 3, 22, 2, 29, 52, 52, 37, 63, 28, 43, 55, 32, 31, 60, 37,
+                //43, 40, 7,
+                //])
+                //.unwrap()
+                //{
+                //dbg_text.push(format!(
+                //"THIS shoule have 0 children leaves counter: {:?}",
+                //self.pending_jumps.jumps[idx]
+                //.elision_data
+                //.children_leaves_counter
+                //));
+                //}
+                &mut self.pending_jumps.jumps[idx].elision_data
+            }
             None => {
                 // NOTE: Once PendingJumps are battle-tested, this could be removed.
                 let expected = if let Some((_, partial_path)) = self.page.jump_data() {
@@ -511,7 +529,7 @@ impl StackPageItem {
                     self.page_id.clone()
                 };
                 assert_eq!(child_page_id.parent_page_id(), expected);
-
+                dbg_text.push("not found pending jump, using stack top elision data".to_string());
                 &mut self.elision_data
             }
         }
@@ -584,6 +602,7 @@ pub struct PageWalker<H> {
     // Whether the page walker is used to reconstruct elided pages.
     // If so, the elision does not occur, if a page is not found in the page set, it is freshly created.
     reconstruction: bool,
+    dbg_text: Vec<String>,
 
     _marker: std::marker::PhantomData<H>,
 
@@ -618,6 +637,7 @@ impl<H: NodeHasher> PageWalker<H> {
             prev_node: None,
             _marker: std::marker::PhantomData,
             reconstruction,
+            dbg_text: vec![],
             #[cfg(test)]
             inhibit_elision: false,
         }
@@ -749,6 +769,14 @@ impl<H: NodeHasher> PageWalker<H> {
             let up = control.up();
             let mut down = control.down();
             let jump = control.jump();
+
+            self.dbg_text.push(format!(
+                "node: {:?}",
+                nomt_core::hasher::node_kind_by_msbs(&node)
+            ));
+            self.dbg_text.push(format!("up: {:?}", up));
+            self.dbg_text.push(format!("down: {:?}", down));
+            self.dbg_text.push(format!("jump: {:?}", jump));
 
             if let WriteNode::Internal {
                 ref internal_data, ..
@@ -947,6 +975,7 @@ impl<H: NodeHasher> PageWalker<H> {
                 // UNWRAPs: There is always a page while goung up.
                 let child_page_id = self.stack.last().unwrap().page_id.clone();
                 let expected_parent_page_id = child_page_id.parent_page_id();
+                // NOTE: this is the only place were the call to handle_traversed_page happens
                 self.handle_traversed_page(page_set);
 
                 // 3
@@ -1046,6 +1075,12 @@ impl<H: NodeHasher> PageWalker<H> {
                 split_page_diff,
                 split_page_elision_data,
             } => {
+                self.dbg_text
+                    .push(format!("split happened at: {:?}", split_page_id));
+                self.dbg_text.push(format!(
+                    "split_page_elision_data: {:?}",
+                    split_page_elision_data
+                ));
                 let mut stack_page_item = StackPageItem {
                     elision_data: split_page_elision_data,
                     page_id: split_page_id,
@@ -1185,6 +1220,17 @@ impl<H: NodeHasher> PageWalker<H> {
                 let used_bits = covered_pages * DEPTH;
                 let jump_bit_path = relevant_bit_path[..used_bits].to_bitvec();
 
+                //if child_page_id
+                //== PageId::decode(&[
+                //51, 44, 20, 7, 3, 22, 2, 29, 52, 52, 37, 63, 28, 43, 55, 32, 31, 60, 37,
+                //43, 40, 7,
+                //])
+                //.unwrap()
+                //{
+                //self.dbg_text
+                //.push("..., 40, 7 pending jump being pushed".to_string());
+                //}
+
                 parent_pending_jumps.jumps.push(PendingJump {
                     start_page_id: child_page_id,
                     destination_page_id: destination_page_id.clone(),
@@ -1285,6 +1331,8 @@ impl<H: NodeHasher> PageWalker<H> {
         }
 
         self.last_position = Some(position.clone());
+        self.dbg_text
+            .push(format!("from pos: {:?}", self.last_position));
         self.position = position.clone();
         self.replace_terminal(page_set, ops);
         self.compact_up(None, page_set);
@@ -1730,6 +1778,8 @@ impl<H: NodeHasher> PageWalker<H> {
 
     // set a node in the current page at the given index. panics if no current page.
     fn set_node(&mut self, node: Node) {
+        self.dbg_text
+            .push(format!("placing not at: {:?}", self.position));
         let node_index = self.position.node_index();
         let sibling_node = self.sibling_node();
 
@@ -2066,11 +2116,17 @@ impl<H: NodeHasher> PageWalker<H> {
             pending_jumps,
         } = self.stack.pop().unwrap();
 
+        self.dbg_text
+            .push(format!("handling page_id: {:?}", page_id));
+
         // Propagate elision data for each pending jump.
         let pending_jumps: Vec<_> = pending_jumps
             .jumps
             .into_iter()
             .map(|pending_jump| {
+                self.dbg_text.push(
+                    "propagating penging jump elision data, overriding parent data".to_string(),
+                );
                 let elided = self.propagate_elision_data(
                     Some(&mut elision_data),
                     &pending_jump.start_page_id,
@@ -2090,6 +2146,9 @@ impl<H: NodeHasher> PageWalker<H> {
             .as_ref()
             .map(|(page_id, _)| page_id.clone())
             .unwrap_or(ROOT_PAGE_ID);
+
+        self.dbg_text
+            .push(format!("parent_page_id {:?}", parent_page_id));
 
         if page_id == ROOT_PAGE_ID || page_id.parent_page_id() == parent_page_id {
             for (pending_jump, elided_pending_jump) in pending_jumps {
@@ -2111,6 +2170,8 @@ impl<H: NodeHasher> PageWalker<H> {
 
         let page_leaves_counter = count_leaves::<H>(&page);
 
+        self.dbg_text
+            .push("propagating elision data, not overriding anything ".to_string());
         let elided =
             self.propagate_elision_data(None, &page_id, page_leaves_counter, &elision_data, None);
 
@@ -2161,7 +2222,11 @@ impl<H: NodeHasher> PageWalker<H> {
             self.stack
                 .last_mut()
                 .map(|stack_top| {
-                    Some(stack_top.parent_elision_data_mut(&page_id, FindBy::Destination))
+                    Some(stack_top.parent_elision_data_mut(
+                        &page_id,
+                        FindBy::Destination,
+                        &mut self.dbg_text,
+                    ))
                 })
                 .or_else(|| {
                     self.parent_data.as_mut().map(|(_, pending_jumps)| {
@@ -2173,6 +2238,18 @@ impl<H: NodeHasher> PageWalker<H> {
                 .flatten()
                 .unwrap()
         });
+
+        self.dbg_text
+            .push(format!("propagating elision data from a {:?}", page_id));
+
+        self.dbg_text.push(format!(
+            " elision_data
+            .children_leaves_counter
+            .or(elision_data.prev_children_leaves_counter): {:?}",
+            elision_data
+                .children_leaves_counter
+                .or(elision_data.prev_children_leaves_counter)
+        ));
 
         if let Some(children_leaves_counter) = elision_data
             .children_leaves_counter
@@ -2187,6 +2264,14 @@ impl<H: NodeHasher> PageWalker<H> {
             if elide {
                 // The total number of leaves in the subtree of this pages is lower than the threshold.
 
+                self.dbg_text.push(format!(
+                    "parent_elision_data.children_leaves_counter: {:?} ",
+                    parent_elision_data.children_leaves_counter
+                ));
+                self.dbg_text.push(format!(
+                    "parent_elision_data.prev_children_leaves_counter: {:?} ",
+                    parent_elision_data.prev_children_leaves_counter
+                ));
                 if let Some(ref mut parent_children_leaves_counter) = parent_elision_data
                     .children_leaves_counter
                     .or(parent_elision_data.prev_children_leaves_counter)
@@ -2201,6 +2286,20 @@ impl<H: NodeHasher> PageWalker<H> {
 
                     let new_parent_children_leaves_counter =
                         *parent_children_leaves_counter as i64 + page_delta + children_delta;
+
+                    self.dbg_text
+                        .push("upated parent children leaves".to_string());
+                    self.dbg_text.push(format!(
+                        "parent_children_leaves_counter: {}",
+                        parent_children_leaves_counter
+                    ));
+                    self.dbg_text.push(format!("page_delta: {}", page_delta));
+                    self.dbg_text
+                        .push(format!("children_delta: {}", children_delta));
+                    self.dbg_text.push(format!(
+                        "new_parent_children_leaves_counter: {}",
+                        new_parent_children_leaves_counter
+                    ));
 
                     // UNWRAP: page_delta and children_delta, if negative, will always be smaller than
                     // parent_children_leaves_counter. More leaves that what was previously present
@@ -2218,6 +2317,10 @@ impl<H: NodeHasher> PageWalker<H> {
                 parent_elision_data
                     .elided_children
                     .set_elide(child_index.clone(), true);
+                self.dbg_text.push(format!(
+                    "setting parent elided children index: {:?}",
+                    child_index.to_u8()
+                ));
                 return true;
             }
         }
@@ -2227,6 +2330,8 @@ impl<H: NodeHasher> PageWalker<H> {
         // UNWRAP: The stack has beed checked to not being empty.
         parent_elision_data.children_leaves_counter = None;
         parent_elision_data.prev_children_leaves_counter = None;
+        self.dbg_text
+            .push("ereased parent children counter data".to_string());
 
         // Special case of pending jump handling: if `pending_jump` is specified,
         // it contains the jump destination, which indicates whether the current page
@@ -2649,7 +2754,11 @@ pub fn reconstruct_pages<H: nomt_core::hasher::NodeHasher>(
         page.node(position.node_index())
     };
 
-    let page_walker = PageWalker::<H>::new_reconstructor(subtree_root, page_id.clone());
+    let mut page_walker = PageWalker::<H>::new_reconstructor(subtree_root, page_id.clone());
+
+    page_walker
+        .dbg_text
+        .push(format!("reconstructing from: {:?}", page_id));
 
     let (root, reconstructed_pages) = page_walker.reconstruct(page_set, position, ops)?;
 
