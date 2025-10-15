@@ -763,6 +763,9 @@ impl<H: NodeHasher> PageWalker<H> {
         // by inserting the collision subtries root as collision leaves.
         let ops = nomt_core::collisions::build_collision_subtries::<H>(ops.into_iter());
 
+        self.dbg_text
+            .push(format!("replace terminal from: {:?}", start_position));
+
         // replace sub-trie at the given position
         nomt_core::update::build_trie::<H>(self.position.depth() as usize, ops, |control| {
             let node = control.node();
@@ -1312,6 +1315,7 @@ impl<H: NodeHasher> PageWalker<H> {
         page_set: &mut impl PageSet,
         position: TriePosition,
         ops: impl IntoIterator<Item = (KeyPath, ValueHash)>,
+        print: bool,
     ) -> Option<(Node, Vec<ReconstructedPage>)> {
         assert!(self.reconstruction);
 
@@ -1348,6 +1352,13 @@ impl<H: NodeHasher> PageWalker<H> {
             })
             .collect();
 
+        if print {
+            println!("DBG RECONSTRUCTION - INIT");
+            for line in self.dbg_text.iter() {
+                println!("{line}");
+            }
+            println!("DBG RECONSTRUCTION - DONE");
+        }
         Some((self.child_page_roots[0].1, reconstructed_pages))
     }
 
@@ -1391,22 +1402,33 @@ impl<H: NodeHasher> PageWalker<H> {
             self.position.depth() as usize
         };
 
+        self.dbg_text
+            .push(format!("comapcting up by: {:?}", compact_layers));
+
         while compact_layers != 0 {
             // 1. Compute next node.
             let next_node = self.compact_step();
 
             // 2. Move up, possibly handling jumps.
             let compact_dest = if self.position.is_first_layer_in_page() {
+                self.dbg_text
+                    .push("within the first layer of a page".to_string());
                 let compact_dest = match self.maybe_lenghten_pending_jump(
                     page_set,
                     next_node,
                     &mut compact_layers,
                 ) {
                     Some(compact_dest) => compact_dest,
-                    None => self.compact_up_page(page_set, next_node, &mut compact_layers),
+                    None => {
+                        self.dbg_text
+                            .push("not making any jump longer, just compactin page up".to_string());
+                        self.compact_up_page(page_set, next_node, &mut compact_layers)
+                    }
                 };
                 compact_dest
             } else {
+                self.dbg_text
+                    .push("not in the first layer of a page".to_string());
                 self.position.up(1);
                 compact_layers -= 1;
                 CompactDestination::Page
@@ -1436,6 +1458,8 @@ impl<H: NodeHasher> PageWalker<H> {
                         self.sibling_stack
                             .push((self.node(), self.position.depth() as usize));
                     }
+                    self.dbg_text
+                        .push("setting node while compacting up".to_string());
                     self.set_node(next_node);
                 }
             }
@@ -1453,22 +1477,30 @@ impl<H: NodeHasher> PageWalker<H> {
         match (NodeKind::of::<H>(&node), NodeKind::of::<H>(&sibling)) {
             (NodeKind::Terminator, NodeKind::Terminator) => {
                 // compact terminators.
+                self.dbg_text
+                    .push("compaction - term and term => term".to_string());
                 trie::TERMINATOR
             }
             (NodeKind::Leaf, NodeKind::Terminator)
             | (NodeKind::CollisionLeaf, NodeKind::Terminator) => {
                 // compact: clear this node, move leaf up.
+                self.dbg_text
+                    .push("compaction - leaf and term => leaf".to_string());
                 self.set_node(trie::TERMINATOR);
                 node
             }
             (NodeKind::Terminator, NodeKind::Leaf)
             | (NodeKind::Terminator, NodeKind::CollisionLeaf) => {
                 // compact: clear sibling node, move leaf up.
+                self.dbg_text
+                    .push("compaction - term and leaf => leaf".to_string());
                 self.position.sibling();
                 self.set_node(trie::TERMINATOR);
                 sibling
             }
             _ => {
+                self.dbg_text
+                    .push("compaction - leaf/internal and leaf/internal => internal".to_string());
                 // otherwise, internal
                 let node_data = if bit {
                     trie::InternalData {
@@ -1779,7 +1811,11 @@ impl<H: NodeHasher> PageWalker<H> {
     // set a node in the current page at the given index. panics if no current page.
     fn set_node(&mut self, node: Node) {
         self.dbg_text
-            .push(format!("placing not at: {:?}", self.position));
+            .push(format!("placing not at pos: {:?}", self.position));
+        self.dbg_text.push(format!(
+            "placing not at page_id: {:?}",
+            self.position.page_id()
+        ));
         let node_index = self.position.node_index();
         let sibling_node = self.sibling_node();
 
@@ -2152,6 +2188,8 @@ impl<H: NodeHasher> PageWalker<H> {
 
         if page_id == ROOT_PAGE_ID || page_id.parent_page_id() == parent_page_id {
             for (pending_jump, elided_pending_jump) in pending_jumps {
+                self.dbg_text
+                    .push("handling parent pending jump".to_string());
                 self.handle_pending_jump(pending_jump, page_set, elided_pending_jump);
             }
 
@@ -2304,6 +2342,11 @@ impl<H: NodeHasher> PageWalker<H> {
                     // UNWRAP: page_delta and children_delta, if negative, will always be smaller than
                     // parent_children_leaves_counter. More leaves that what was previously present
                     // cannot be removed.
+                    if new_parent_children_leaves_counter.is_negative() {
+                        for line in self.dbg_text.iter() {
+                            println!("{line}");
+                        }
+                    }
                     parent_elision_data
                         .children_leaves_counter
                         .replace(new_parent_children_leaves_counter.try_into().unwrap());
@@ -2755,12 +2798,17 @@ pub fn reconstruct_pages<H: nomt_core::hasher::NodeHasher>(
     };
 
     let mut page_walker = PageWalker::<H>::new_reconstructor(subtree_root, page_id.clone());
+    println!("reconstrution from a {:?}", page_id);
 
+    let mut print = false;
+    if page_id.encode().starts_with(&[42]) && position.child_page_index().to_u8() == 12 {
+        print = true;
+    }
     page_walker
         .dbg_text
         .push(format!("reconstructing from: {:?}", page_id));
 
-    let (root, reconstructed_pages) = page_walker.reconstruct(page_set, position, ops)?;
+    let (root, reconstructed_pages) = page_walker.reconstruct(page_set, position, ops, print)?;
 
     assert_eq!(root, subtree_root);
 
