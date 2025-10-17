@@ -255,17 +255,21 @@ impl PendingJumps {
     /// propagate the elision data to the parent, if specified.
     fn remove_pending_jump(&mut self, idx: usize, parent_elision_data: Option<&mut ElisionData>) {
         let PendingJump {
-            elision_data: removed_elisin_data,
+            elision_data: removed_elision_data,
             ..
         } = self.jumps.remove(idx);
 
         // Removing a pending jump needs to propagate the already counted number of children leaves
         // if the parent is not already non-elided.
         match parent_elision_data {
-            Some(parent_data) if !parent_data.prev_children_leaves_counter.is_none() => {
-                let children_leaves_counter = parent_data.children_leaves_counter.get_or_insert(0);
+            Some(parent_data) if parent_data.prev_children_leaves_counter.is_some() => {
+                // UNWRAP: prev_children_leaves_counter has just been checked to be Some.
+                let children_leaves_counter = parent_data
+                    .children_leaves_counter
+                    .get_or_insert(parent_data.prev_children_leaves_counter.unwrap());
+
                 *children_leaves_counter +=
-                    removed_elisin_data.children_leaves_counter.unwrap_or(0);
+                    removed_elision_data.children_leaves_counter.unwrap_or(0);
             }
             _ => (),
         }
