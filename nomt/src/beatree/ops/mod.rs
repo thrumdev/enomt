@@ -3,6 +3,7 @@
 use anyhow::Result;
 use bitvec::prelude::*;
 
+use nomt_core::{hasher::ValueHasher, trie::ValueHash};
 use std::{cmp::Ordering, sync::Arc};
 
 use super::{
@@ -52,6 +53,19 @@ pub fn finish_lookup_blocking(
     })
 }
 
+/// Find the value hash associated with the key in the given leaf node, if any.
+pub fn finish_hash_lookup_blocking<T: ValueHasher>(key: Key, leaf: &LeafNode) -> Option<ValueHash> {
+    let (found, index) = leaf_find_key_pos(&leaf, &key, None);
+    if !found {
+        return None;
+    }
+    let value_hash = match leaf.value(index) {
+        (value, false) => T::hash_value(value),
+        (cell, true) => super::ops::overflow::decode_cell(cell).1,
+    };
+    Some(value_hash)
+}
+
 /// Find the associated value associated with the key in the given leaf node, if any.
 ///
 /// If the value is an overflow, this function will create an asynchronous reader.
@@ -71,6 +85,25 @@ pub fn finish_lookup_async(
         .transpose()
 }
 
+fn leaf_lookup_blocking(
+    key: &Key,
+    bbn_index: &Index,
+    leaf_cache: &LeafCache,
+    leaf_store: &StoreReader,
+) -> Option<Arc<LeafNode>> {
+    let leaf_pn = partial_lookup(key, bbn_index)?;
+    match leaf_cache.get(leaf_pn) {
+        Some(leaf) => Some(leaf),
+        None => {
+            let leaf = Arc::new(LeafNode {
+                inner: leaf_store.query(leaf_pn),
+            });
+            leaf_cache.insert(leaf_pn, leaf.clone());
+            Some(leaf)
+        }
+    }
+}
+
 /// Lookup a key in the btree using blocking I/O.
 pub fn lookup_blocking(
     key: Key,
@@ -78,23 +111,23 @@ pub fn lookup_blocking(
     leaf_cache: &LeafCache,
     leaf_store: &StoreReader,
 ) -> Result<Option<Vec<u8>>> {
-    let leaf_pn = match partial_lookup(&key, bbn_index) {
-        None => return Ok(None),
-        Some(pn) => pn,
+    let Some(leaf) = leaf_lookup_blocking(&key, bbn_index, leaf_cache, leaf_store) else {
+        return Ok(None);
     };
-
-    let leaf = match leaf_cache.get(leaf_pn) {
-        Some(leaf) => leaf,
-        None => {
-            let leaf = Arc::new(LeafNode {
-                inner: leaf_store.query(leaf_pn),
-            });
-            leaf_cache.insert(leaf_pn, leaf.clone());
-            leaf
-        }
-    };
-
     Ok(finish_lookup_blocking(key, &leaf, leaf_store))
+}
+
+/// Lookup a key in the btree and return its associated value hash using blocking I/O.
+pub fn hash_lookup_blocking<T: crate::ValueHasher>(
+    key: Key,
+    bbn_index: &Index,
+    leaf_cache: &LeafCache,
+    leaf_store: &StoreReader,
+) -> Result<Option<ValueHash>> {
+    let Some(leaf) = leaf_lookup_blocking(&key, bbn_index, leaf_cache, leaf_store) else {
+        return Ok(None);
+    };
+    Ok(finish_hash_lookup_blocking::<T>(key, &leaf))
 }
 
 /// Binary search a branch node for the child node containing the key. This returns the last child
