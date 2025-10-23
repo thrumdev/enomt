@@ -572,6 +572,16 @@ impl<T: HashAlgorithm> Session<T> {
         Ok(self.merkle_updater.prove::<T>(path)?)
     }
 
+    /// Synchronously read the hash of the value stored under the given key.
+    ///
+    /// Returns `None` if the value is not stored under the given key. Fails only if I/O fails.
+    pub fn read_hash(&self, path: KeyPath) -> anyhow::Result<Option<ValueHash>> {
+        if let Some(value_change) = self.overlay.value(&path) {
+            return Ok(value_change.as_option().map(|v| T::hash_value(v)));
+        }
+        self.store.load_value_hash::<T>(path)
+    }
+
     /// Finish the session. Provide the actual reads and writes (in sorted order) that are to be
     /// considered within the finished session.
     ///

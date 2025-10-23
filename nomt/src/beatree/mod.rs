@@ -165,6 +165,31 @@ impl Tree {
         .unwrap()
     }
 
+    /// Lookup a key in the btree and return its associated value hash.
+    /// This blocks the current thread.
+    pub fn lookup_hash<T: crate::ValueHasher>(&self, key: Key) -> Option<ValueHash> {
+        let shared = self.shared.read();
+
+        // First look up in the primary staging which contains the most recent changes.
+        if let Some(val) = shared.primary_staging.get(&key) {
+            return val.as_option().map(|v| T::hash_value(v));
+        }
+
+        // Then check the secondary staging which is a bit older, but fresher still than the btree.
+        if let Some(val) = shared.secondary_staging.as_ref().and_then(|x| x.get(&key)) {
+            return val.as_option().map(|v| T::hash_value(v));
+        }
+
+        // Finally, look up in the btree.
+        ops::hash_lookup_blocking::<T>(
+            key,
+            &shared.bbn_index,
+            &shared.leaf_cache,
+            &shared.leaf_store_rd,
+        )
+        .unwrap()
+    }
+
     /// Returns a controller for the sync process. This is blocked by other `sync`s running as well
     /// as the existence of any read transactions.
     pub fn sync(&self) -> SyncController {

@@ -223,6 +223,14 @@ impl Store {
         Ok(self.shared.values.lookup(key))
     }
 
+    /// Loads the value hash stored under the given key.
+    pub fn load_value_hash<T: crate::ValueHasher>(
+        &self,
+        key: KeyPath,
+    ) -> anyhow::Result<Option<nomt_core::trie::ValueHash>> {
+        Ok(self.shared.values.lookup_hash::<T>(key))
+    }
+
     /// Loads the given page, blocking the current thread.
     pub fn load_page(&self, page_id: PageId) -> anyhow::Result<Option<(FatPage, BucketIndex)>> {
         let page_loader = self.page_loader();
