@@ -20,7 +20,7 @@ use page_cache::PageCache;
 use parking_lot::{ArcRwLockReadGuard, Mutex, RwLock};
 use store::{Store, ValueTransaction};
 
-pub use beatree::KeyValueIterator;
+pub use beatree::{KeyValueIterator, ValueChange};
 pub use io::IoUringPermission;
 pub use nomt_core::hasher;
 pub use nomt_core::proof;
@@ -69,7 +69,7 @@ struct Shared {
 }
 
 /// Whether a key was read, written, or both, along with old and new values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyReadWrite {
     /// The key was read. Contains the read value.
     Read(Option<Value>),

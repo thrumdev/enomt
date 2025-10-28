@@ -61,7 +61,7 @@ impl Overlay {
     }
 
     /// Get the merkle page changes associated uniquely with this overlay.
-    pub(super) fn value_changes(&self) -> &HashMap<KeyPath, ValueChange> {
+    pub fn value_changes(&self) -> &HashMap<KeyPath, ValueChange> {
         &self.inner.data.values
     }
 
