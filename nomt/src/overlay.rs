@@ -40,6 +40,23 @@ impl Overlay {
         Root(self.inner.root)
     }
 
+    /// Get the changes associated uniquely with this overlay.
+    pub fn changes(&self) -> Vec<(KeyPath, Option<Vec<u8>>)> {
+        self.inner
+            .data
+            .values
+            .iter()
+            .map(|(key, value_change)| {
+                let maybe_val = match value_change {
+                    ValueChange::Delete => None,
+                    ValueChange::Insert(val) => Some(val.to_vec()),
+                    ValueChange::InsertOverflow(val, _value_hash) => Some(val.to_vec()),
+                };
+                (key.clone(), maybe_val)
+            })
+            .collect()
+    }
+
     /// Get the previous root of this overlay.
     pub(super) fn prev_root(&self) -> Root {
         Root(self.inner.prev_root)
