@@ -447,10 +447,17 @@ impl<H: HashAlgorithm> RangeUpdater<H> {
             let mut sibling_chunks_iter = sibling_chunks.iter_mut();
             for (actual_sibling, actual_sibling_depth) in actual_siblings {
                 loop {
+                    // One single sibling chunk could cover more than on single
+                    // actual sibling, thus if the depth of the actual do not exceed
+                    // the depth previously reached by a chunk of of terminator
+                    // the iterator do not need to advance.
+                    if *actual_sibling_depth <= depth {
+                        break;
+                    }
+
                     // UNWRAP: All actual siblings are expected to replace a sibling
                     // among those already collected.
                     let chunk = sibling_chunks_iter.next().unwrap();
-
                     depth += chunk.covered_layers();
 
                     // Terminator chunks are never expected to be substituted
