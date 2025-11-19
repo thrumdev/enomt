@@ -49,8 +49,12 @@ impl PageDiff {
     }
 
     /// Set the page diff to represent a jump page.
-    pub fn set_jump(&mut self) {
-        self.changed_nodes[1] |= JUMP_BIT;
+    pub fn set_jump(&mut self, jump: bool) {
+        if jump {
+            self.changed_nodes[1] |= JUMP_BIT;
+        } else {
+            self.changed_nodes[1] &= !JUMP_BIT;
+        }
     }
 
     /// Whether the page is a jump page.
@@ -236,30 +240,30 @@ mod tests {
 
         // 1 bit long paritial path
         let mut jump_diff = PageDiff::from_jump_page(1);
-        jump_diff.set_jump();
+        jump_diff.set_jump(true);
 
         check_jump_page_diff(jump_diff, 1);
 
         // 8 bit long paritial path
         let mut jump_diff = PageDiff::from_jump_page(8);
-        jump_diff.set_jump();
+        jump_diff.set_jump(true);
         check_jump_page_diff(jump_diff, 1);
 
         // 32 * 8 bit long paritial path
         let mut jump_diff = PageDiff::from_jump_page(32 * 8);
-        jump_diff.set_jump();
+        jump_diff.set_jump(true);
         check_jump_page_diff(jump_diff, 1);
 
         // 32 * 8 + 1 bit long paritial path
         let mut jump_diff = PageDiff::from_jump_page(32 * 8 + 1);
-        jump_diff.set_jump();
+        jump_diff.set_jump(true);
         check_jump_page_diff(jump_diff, 2);
 
         // 31 changes by 32 byte each by 8 bits each + some other bits
         // should result in the maximum amount of changes given a key
         // big as most 1KiB
         let mut jump_diff = PageDiff::from_jump_page(31 * 32 * 8 + 9);
-        jump_diff.set_jump();
+        jump_diff.set_jump(true);
         check_jump_page_diff(jump_diff, 32);
     }
 }

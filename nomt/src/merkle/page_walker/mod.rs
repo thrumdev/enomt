@@ -253,9 +253,11 @@ impl PendingJumps {
 
     /// Remove the PendingJump specified by its index and possibly
     /// propagate the elision data to the parent, if specified.
-    fn remove_pending_jump(&mut self, idx: usize, parent_elision_data: Option<&mut ElisionData>) {
+    fn remove_pending_jump(&mut self, idx: usize, parent_elision_data: Option<&mut ElisionData>)
+        -> Option<(PageId, PageMut, PageOrigin)>  {
         let PendingJump {
             elision_data: removed_elision_data,
+            source,
             ..
         } = self.jumps.remove(idx);
 
@@ -273,6 +275,7 @@ impl PendingJumps {
             }
             _ => (),
         }
+        source
     }
 
     /// Split a PendingJump exactly `up` positions from the destination.
@@ -312,7 +315,7 @@ impl PendingJumps {
 
         let init_second_half_bit_path = first_half_bit_path.len() + DEPTH;
         let split_page_jump_bit_path =
-            &jump.bit_path[first_half_bit_path_len..init_second_half_bit_path];
+            jump.bit_path[first_half_bit_path_len..init_second_half_bit_path].to_bitvec();
 
         // UNWRAP: 6 bits never overflows child page index
         let child_index = ChildPageIndex::new(split_page_jump_bit_path.load_be::<u8>()).unwrap();
@@ -321,10 +324,31 @@ impl PendingJumps {
         let second_half_bit_path = jump.bit_path[init_second_half_bit_path..].to_bitvec();
         let second_half_destination_page_id = jump.destination_page_id.clone();
 
-        let mut split_page = page_set.fresh();
-        let mut split_page_diff = PageDiff::default();
-
+        // Save or modify jump data before possibly removing it.
+        let mut split_page_elision_data = jump.elision_data.clone();
         let maybe_jump_node = jump.node;
+        let mut split_page_diff = PageDiff::default();
+        jump.elision_data.elided_children = ElidedChildren::new();
+
+        // Clear the current PendingJump if the split occurred within the
+        // staring page. Otherwise update destination and bit_path.
+        let (mut split_page, split_page_origin) = if first_half_bit_path.is_empty() {
+            let source = self.remove_pending_jump(jump_idx, parent_elision_data);
+            match source {
+                Some((_page_id, mut page, page_origin)) =>{
+                    // Re-use the page and the source.
+                    page.set_jump_tag(false);
+                    split_page_diff.set_jump(false);
+                    (page, page_origin.bucket_info())
+                },
+                None => (page_set.fresh(), None),
+            }
+        } else {
+            jump.destination_page_id = split_page_id.clone();
+            jump.bit_path = first_half_bit_path;
+            (page_set.fresh(), None)
+        };
+
         match maybe_jump_node {
             // Fill the split page up to the jump_node_layers with the jump node,
             // if it is a valid internal node.
@@ -362,8 +386,6 @@ impl PendingJumps {
         // only extracting the elided_children field that will be moved to the split page.
         // Meanwhile, the split page will store the pending jump's children_leaves_counter value
         // in the children_leaves_counter and prev_children_leaves_counter.
-        let mut split_page_elision_data = jump.elision_data.clone();
-        jump.elision_data.elided_children = ElidedChildren::new();
         match &split_page_elision_data.children_leaves_counter {
             Some(leaves) if *leaves > 0 => {
                 split_page_elision_data.prev_children_leaves_counter =
@@ -381,15 +403,6 @@ impl PendingJumps {
         // with the second half pending jump.
         if !second_half_bit_path.is_empty() {
             split_page_elision_data.elided_children = ElidedChildren::new();
-        }
-
-        // Clear the current PendingJump if the split occurred within the
-        // staring page. Otherwise update destination and bit_path.
-        if first_half_bit_path.is_empty() {
-            self.remove_pending_jump(jump_idx, parent_elision_data);
-        } else {
-            jump.destination_page_id = split_page_id.clone();
-            jump.bit_path = first_half_bit_path;
         }
 
         let second_half_bit_path_len = second_half_bit_path.len();
@@ -423,6 +436,7 @@ impl PendingJumps {
         SplitJumpResult::Split {
             split_page_id,
             split_page,
+            split_page_origin,
             split_page_diff,
             split_page_elision_data,
             jumped_bits: second_half_bit_path_len,
@@ -443,6 +457,9 @@ enum SplitJumpResult {
         /// Page containing a portion of the previous jump,
         /// up to the split point.
         split_page: PageMut,
+        /// The origin of the split page if the split occurred within the first page
+        /// of the jump.
+        split_page_origin: Option<BucketInfo>,
         /// Page diff associated with the the fill of the split page.
         split_page_diff: PageDiff,
         /// Elision data associated to the split page.
@@ -1073,6 +1090,7 @@ impl<H: NodeHasher> PageWalker<H> {
             SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 jumped_bits,
                 pending_jump,
                 split_page_diff,
@@ -1089,7 +1107,7 @@ impl<H: NodeHasher> PageWalker<H> {
                     page_id: split_page_id,
                     page: split_page,
                     diff: split_page_diff,
-                    bucket_info: None,
+                    bucket_info: split_page_origin,
                     pending_jumps: PendingJumps { jumps: vec![] },
                 };
 
@@ -1316,7 +1334,7 @@ impl<H: NodeHasher> PageWalker<H> {
         position: TriePosition,
         ops: impl IntoIterator<Item = (KeyPath, ValueHash)>,
         print: bool,
-    ) -> Option<(Node, Vec<ReconstructedPage>)> {
+    ) -> Option<(Node, Vec<ReconstructedPage>, Vec<String>)> {
         assert!(self.reconstruction);
 
         // UNWRAPs: parent_data must be present.
@@ -1352,14 +1370,14 @@ impl<H: NodeHasher> PageWalker<H> {
             })
             .collect();
 
-        if print {
-            println!("DBG RECONSTRUCTION - INIT");
-            for line in self.dbg_text.iter() {
-                println!("{line}");
-            }
-            println!("DBG RECONSTRUCTION - DONE");
-        }
-        Some((self.child_page_roots[0].1, reconstructed_pages))
+        // if print {
+        //     println!("DBG RECONSTRUCTION - INIT");
+        //     for line in self.dbg_text.iter() {
+        //         println!("{line}");
+        //     }
+        //     println!("DBG RECONSTRUCTION - DONE");
+        // }
+        Some((self.child_page_roots[0].1, reconstructed_pages, self.dbg_text))
     }
 
     // From the current position, compact upwards towards `target_pos` if specified,
@@ -1389,8 +1407,28 @@ impl<H: NodeHasher> PageWalker<H> {
             // we want to compact up (inclusive) to the depth `shared_depth + 1`
             let compact_layers = current_depth - (shared_depth + 1);
 
+            // The probelm is that it happens to be a scenario where the current position
+            // is loewet than the target, thus no compaction is needed but apparently
+            // also no actual sibling is needed, which instead is pushed with the wrong node
+            // if self.position.path().starts_with(bits![u8, Msb0; 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]) {
+            //     println!("compacting up:");
+            //     println!("self.position: {:?}", self.position);
+            //     println!("target pos:    {:?}", target_pos);
+            // }
+
             if compact_layers == 0 {
+
                 if let Some(prev_node) = self.prev_node.take() {
+
+                    // if self.position.path().starts_with(bits![u8, Msb0; 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]) && current_depth == 18 {
+                    //     println!("current_depth: {:?}", current_depth );
+                    //     // TODO: the position here is completely wrong.
+                    //     println!("self.position: {:?}", self.position);
+                    //     println!("compact up, terminator sibling is being saved here");
+                    //     println!("prev node: {:?}", prev_node);
+                    //     println!("target pos: {:?}", target_pos);
+                    // }
+
                     self.sibling_stack.push((prev_node, current_depth));
                 }
             } else {
@@ -1455,6 +1493,11 @@ impl<H: NodeHasher> PageWalker<H> {
                 }
                 CompactDestination::Page => {
                     if compact_layers == 0 {
+
+                        // if self.position.path().starts_with(bits![u8, Msb0; 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]) && self.position.depth()== 18 {
+                        //     println!("compact up 2, terminator sibling is being saved here");
+                        // }
+
                         self.sibling_stack
                             .push((self.node(), self.position.depth() as usize));
                     }
@@ -1745,6 +1788,7 @@ impl<H: NodeHasher> PageWalker<H> {
             SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 split_page_diff,
                 split_page_elision_data,
                 pending_jump,
@@ -1755,7 +1799,7 @@ impl<H: NodeHasher> PageWalker<H> {
                     page_id: split_page_id,
                     page: split_page,
                     diff: split_page_diff,
-                    bucket_info: None,
+                    bucket_info: split_page_origin,
                     pending_jumps: PendingJumps { jumps: vec![] },
                 };
                 if let Some(pending_jump) = pending_jump {
@@ -1771,6 +1815,12 @@ impl<H: NodeHasher> PageWalker<H> {
         self.position.up(jumped_layers as u16);
 
         if *compact_layers == 0 {
+
+
+            if self.position.path().starts_with(bits![u8, Msb0; 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]) && self.position.depth()== 18 {
+                // println!("compact up from pending jump, terminator sibling is being saved here");
+            }
+
             self.sibling_stack
                 .push((prev_node, self.position.depth() as usize));
             return Some(CompactDestination::SplitJump);
@@ -1816,6 +1866,14 @@ impl<H: NodeHasher> PageWalker<H> {
             "placing not at page_id: {:?}",
             self.position.page_id()
         ));
+
+        if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1]) {
+            println!("");
+            println!("pos: {:?}", self.position.path());
+            println!("node kind: {:?}", nomt_core::hasher::node_kind_by_msbs(&node));
+            println!("node: {:?}", &node);
+       }
+
         let node_index = self.position.node_index();
         let sibling_node = self.sibling_node();
 
@@ -2096,6 +2154,7 @@ impl<H: NodeHasher> PageWalker<H> {
             let SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 split_page_diff,
                 split_page_elision_data,
                 pending_jump,
@@ -2117,7 +2176,7 @@ impl<H: NodeHasher> PageWalker<H> {
                 page_id: split_page_id.clone(),
                 page: split_page,
                 diff: split_page_diff,
-                bucket_info: None,
+                bucket_info: split_page_origin,
                 pending_jumps: PendingJumps { jumps: vec![] },
             };
 
@@ -2342,11 +2401,11 @@ impl<H: NodeHasher> PageWalker<H> {
                     // UNWRAP: page_delta and children_delta, if negative, will always be smaller than
                     // parent_children_leaves_counter. More leaves that what was previously present
                     // cannot be removed.
-                    if new_parent_children_leaves_counter.is_negative() {
-                        for line in self.dbg_text.iter() {
-                            println!("{line}");
-                        }
-                    }
+                    // if new_parent_children_leaves_counter.is_negative() {
+                    //     for line in self.dbg_text.iter() {
+                    //         println!("{line}");
+                    //     }
+                    // }
                     parent_elision_data
                         .children_leaves_counter
                         .replace(new_parent_children_leaves_counter.try_into().unwrap());
@@ -2631,7 +2690,7 @@ impl<H: NodeHasher> PageWalker<H> {
         let mut page = page_set.fresh();
 
         let mut diff = PageDiff::from_jump_page(pending_jump.bit_path.len());
-        diff.set_jump();
+        diff.set_jump(true);
         page.tag_jump_page(node, pending_jump.bit_path);
 
         if self.reconstruction {
@@ -2798,17 +2857,53 @@ pub fn reconstruct_pages<H: nomt_core::hasher::NodeHasher>(
     };
 
     let mut page_walker = PageWalker::<H>::new_reconstructor(subtree_root, page_id.clone());
-    println!("reconstrution from a {:?}", page_id);
+    // println!("reconstrution from a {:?}", page_id);
 
     let mut print = false;
-    if page_id.encode().starts_with(&[42]) && position.child_page_index().to_u8() == 12 {
-        print = true;
-    }
+    // if position.path().starts_with(bits![u8, Msb0; 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]) {
+    //     println!("");
+    //     println!("reconstructing [0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]");
+    //     print = true;
+    // }
+    // if page_id.encode().starts_with(&[42]) && position.child_page_index().to_u8() == 12 {
+    //     print = true;
+    // }
+    // if page_id.encode() == [23, 51] {
+    //      println!("reconstructin from 23, 51: {:?}", position.path());
+    // }
+    // if page_id.encode() == [23] {
+    //      println!("reconstructin from 23: {:?}", position.path());
+    // }
+
+    // if position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0]) {
+    //     print = true;
+    // }
+
     page_walker
         .dbg_text
         .push(format!("reconstructing from: {:?}", page_id));
 
-    let (root, reconstructed_pages) = page_walker.reconstruct(page_set, position, ops, print)?;
+    // let (root, reconstructed_pages, dbg_text) = page_walker.reconstruct(page_set, position, ops, print)?;
+    let (root, reconstructed_pages, dbg_text) = page_walker.reconstruct(page_set, position, ops, false)?;
+
+    // NOTE: the interesting problem is that the reconstruction for the rollback *fails*
+    // after the commit has just been applied.
+    //
+    // How is this possible?
+    //
+    // This imply that the same bug should happen if
+    // if root != subtree_root || print {
+    if root != subtree_root || false {
+        for line in dbg_text {
+            println!("{line}");
+        }
+    }
+
+    if print {
+        println!("reconstruction done");
+        println!("");
+    }
+
 
     assert_eq!(root, subtree_root);
 
