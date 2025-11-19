@@ -361,7 +361,7 @@ impl ValueTransaction {
 ///
 /// The only overhead for non-fresh pages is the overhead of an enum. For fresh pages, there is an
 /// allocation and atomic overhead.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum BucketInfo {
     /// The bucket index is known.
     Known(BucketIndex),

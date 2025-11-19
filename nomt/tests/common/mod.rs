@@ -68,10 +68,16 @@ impl Test {
         cleanup_dir: bool,
     ) -> Self {
         let path = {
-            let mut p = PathBuf::from("test");
-            p.push(name);
-            p
+            // let path = std::path::Path::new(name.to_string());
+            if name.as_ref().is_absolute() {
+                 name.as_ref().to_path_buf()
+            } else {
+                let mut p = PathBuf::from("test");
+                p.push(name);
+                p
+            }
         };
+        println!("path used to open db: {:?}", path);
         if cleanup_dir {
             let _ = std::fs::remove_dir_all(&path);
         }
@@ -82,6 +88,10 @@ impl Test {
         o.bitbox_seed([0; 16]);
         o.hashtable_buckets(hashtable_buckets);
         o.commit_concurrency(commit_concurrency);
+
+        o.rollback(true);
+        o.max_rollback_log_len(1);
+
         let nomt = Nomt::open(o).unwrap();
         let session =
             nomt.begin_session(SessionParams::default().witness_mode(WitnessMode::read_write()));
@@ -148,21 +158,46 @@ impl Test {
         (root, witness)
     }
 
+    // pub fn drop_session(&mut self) {
+    //     let session = mem::take(&mut self.session).unwrap();
+    //     drop(session);
+
+    //     self.session = Some(
+    //         self.nomt
+    //             .begin_session(SessionParams::default().witness_mode(WitnessMode::read_write())),
+    //     );
+    // }
+
     pub fn commit_actual(
         &mut self,
         actual_access: Vec<(KeyPath, KeyReadWrite)>,
-    ) -> (Root, Witness) {
+    // ) -> (Root, Witness) {
+    ) -> Root {
         let session = mem::take(&mut self.session).unwrap();
 
         let mut finished = session.finish(actual_access).unwrap();
         let root = finished.root();
-        let witness = finished.take_witness().unwrap();
+        let witness = finished.take_witness();
+        // let witness = finished.take_witness().unwrap();
         finished.commit(&self.nomt).unwrap();
         self.session = Some(
             self.nomt
                 .begin_session(SessionParams::default().witness_mode(WitnessMode::read_write())),
         );
-        (root, witness)
+        root
+        // (root, witness)
+    }
+
+    pub fn rollback(&mut self) {
+        let session = mem::take(&mut self.session).unwrap();
+        drop(session);
+
+        self.nomt.rollback(1);
+
+        self.session = Some(
+            self.nomt
+                .begin_session(SessionParams::default().witness_mode(WitnessMode::read_write())),
+        );
     }
 
     pub fn update(&mut self) -> (Overlay, Witness) {

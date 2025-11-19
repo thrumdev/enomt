@@ -60,7 +60,7 @@ impl BucketIndex {
 /// but hasn't yet.
 ///
 /// Typically, this will be instantiated with `None` and then `set`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SharedMaybeBucketIndex(Arc<AtomicU64>);
 
 impl SharedMaybeBucketIndex {
@@ -200,6 +200,14 @@ impl DB {
 
         // Allocate relevant buckets and update the meta-map.
         for (page_id, dirty_page) in changes {
+
+            if page_id.encode() == &[23, 51] {
+                println!("updating page [23, 51]");
+                println!("is jump: {}", dirty_page.diff.jump());
+                println!("bucket info: {:?}", dirty_page.bucket);
+                println!("is cleared: {}", dirty_page.diff.cleared());
+            }
+
             if dirty_page.diff.cleared() {
                 occupied_buckets_delta -= 1;
 

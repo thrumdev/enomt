@@ -141,8 +141,25 @@ impl SeekRequest {
 
         self.page_id = Some(page_id.clone());
 
+        // What are we interesetd in is at the end of the third page?
+        // NOT REALLY
         if page.jump() {
-            self.continue_seek_over_jump::<H>(page, record_siblings);
+
+            let mut print = false;
+            // if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0]) {
+            if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1]) {
+                println!("");
+                println!("page_id of jump page: {:?}", self.page_id);
+                // println!("Jumping from [0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1]");
+                println!("Jumping from {:?}", self.position);
+                println!("seek key path is: {:?}", self.key.view_bits::<Msb0>());
+                print  = true;
+            }
+
+            self.continue_seek_over_jump::<H>(page, record_siblings, print);
+            if print {
+                println!("reached position: {:?}", self.position.path());
+            }
             return;
         }
 
@@ -157,14 +174,44 @@ impl SeekRequest {
             bits[idx] = *bit;
         }
 
+
         for bit in bits {
             self.position.down(bit);
 
             let cur_node = page.node(self.position.node_index());
+
+            let mut print = false;
+            // if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0]) {
+            if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0]) {
+            // if self.position.path().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1]) {
+                println!("");
+                println!("Seeking from pos: {:?}", self.position.path());
+                print = true;
+            }
+
+
+            if print {
+                println!("At pos: {:?}", self.position.path());
+                println!(
+                    "node kind: {:?}",
+                    nomt_core::hasher::node_kind_by_msbs(&cur_node)
+                );
+                println!("node: {:?}", &cur_node);
+            }
+
+
             if record_siblings {
+                let sibling = page.node(self.position.sibling_index());
                 self.sibling_chunks.push(SiblingChunk::Sibling(
-                    page.node(self.position.sibling_index()),
+                    sibling.clone() ,
                 ));
+
+                // if print {
+                //     println!(
+                //         "recoding sibling kind: {:?}",
+                //         nomt_core::hasher::node_kind_by_msbs(&sibling)
+                //     );
+                // }
             }
 
             if trie::is_leaf::<H>(&cur_node) {
@@ -222,7 +269,7 @@ impl SeekRequest {
         }
     }
 
-    fn continue_seek_over_jump<H: HashAlgorithm>(&mut self, page: &Page, record_siblings: bool) {
+    fn continue_seek_over_jump<H: HashAlgorithm>(&mut self, page: &Page, record_siblings: bool, print: bool) {
         let Some((jump_node, partial_path)) = page.jump_data() else {
             // PANIC: continue_seek_over_jump expectes jump data to be presen
             panic!()
@@ -232,11 +279,20 @@ impl SeekRequest {
         let start = std::cmp::min(self.position.depth() as usize, key_path_bits.len());
         let key_path_bits = &key_path_bits[start..];
 
+        // if print {
+        //     println!("jump partial path: {:?}", partial_path);
+        // }
+
         // `partial_path` is the path represented by the jump page,
         // the current `key_path` needs to be compared with the jump `partial_path`.
         // They can be the same, allowing the seeker to jump directly to the destination
         // page, or they could diverge, implying the reach of a terminator node.
         if let Some(divergence_bit_idx) = divergence_bit(&partial_path, key_path_bits) {
+            if print {
+                // let min_len = std::cmp::min(key_path_bits.len(), 24);
+                // println!("key_path_bits: {:?}", &key_path_bits[..min_len]);
+                // println!("divergence at pos: {:?}", divergence_bit_idx);
+            }
             for idx in 0..=divergence_bit_idx {
                 self.position
                     .down(key_path_bits.get(idx).map(|b| *b).unwrap_or(false));
@@ -252,6 +308,10 @@ impl SeekRequest {
 
             self.state = RequestState::Completed(None);
             return;
+        }
+
+        if print {
+           // println!("No divergence, go deeper");
         }
 
         // Advace position and page id accordingly to the partial path.

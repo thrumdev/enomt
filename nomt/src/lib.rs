@@ -380,6 +380,13 @@ impl<T: HashAlgorithm> Nomt<T> {
         // Convert the traceback into a series of write commands.
         let mut actuals = Vec::new();
         for (key, value) in traceback {
+            use bitvec::prelude::*;
+            // if key.view_bits::<Msb0>().starts_with(bits![u8, Msb0; 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0]) {
+            //     let key_bits =  key.view_bits::<Msb0>();
+            //     let n_bits = std::cmp::min(key_bits.len(), 24);
+            //     println!("traceback has key: {:?}", &key_bits[..n_bits] );
+            //     println!("traceback has value: {:?}", &value);
+            // }
             sess.warm_up(key.clone());
             let value = KeyReadWrite::Write(value);
             actuals.push((key, value));
