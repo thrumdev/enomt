@@ -91,7 +91,7 @@ impl PageMut {
             .copy_from_bitslice(&partial_path);
     }
 
-    fn set_jump_tag(&mut self, jump: bool) {
+    pub fn set_jump_tag(&mut self, jump: bool) {
         let tag = if jump { &JUMP_TAG } else { &[0; 4] };
         self.inner[TAG_RANGE].copy_from_slice(tag);
     }
