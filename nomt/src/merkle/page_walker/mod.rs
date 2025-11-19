@@ -253,9 +253,11 @@ impl PendingJumps {
 
     /// Remove the PendingJump specified by its index and possibly
     /// propagate the elision data to the parent, if specified.
-    fn remove_pending_jump(&mut self, idx: usize, parent_elision_data: Option<&mut ElisionData>) {
+    fn remove_pending_jump(&mut self, idx: usize, parent_elision_data: Option<&mut ElisionData>)
+        -> Option<(PageId, PageMut, PageOrigin)>  {
         let PendingJump {
             elision_data: removed_elision_data,
+            source,
             ..
         } = self.jumps.remove(idx);
 
@@ -273,6 +275,7 @@ impl PendingJumps {
             }
             _ => (),
         }
+        source
     }
 
     /// Split a PendingJump exactly `up` positions from the destination.
@@ -312,7 +315,7 @@ impl PendingJumps {
 
         let init_second_half_bit_path = first_half_bit_path.len() + DEPTH;
         let split_page_jump_bit_path =
-            &jump.bit_path[first_half_bit_path_len..init_second_half_bit_path];
+            jump.bit_path[first_half_bit_path_len..init_second_half_bit_path].to_bitvec();
 
         // UNWRAP: 6 bits never overflows child page index
         let child_index = ChildPageIndex::new(split_page_jump_bit_path.load_be::<u8>()).unwrap();
@@ -321,10 +324,31 @@ impl PendingJumps {
         let second_half_bit_path = jump.bit_path[init_second_half_bit_path..].to_bitvec();
         let second_half_destination_page_id = jump.destination_page_id.clone();
 
-        let mut split_page = page_set.fresh();
-        let mut split_page_diff = PageDiff::default();
-
+        // Save or modify jump data before possibly removing it.
+        let mut split_page_elision_data = jump.elision_data.clone();
         let maybe_jump_node = jump.node;
+        let mut split_page_diff = PageDiff::default();
+        jump.elision_data.elided_children = ElidedChildren::new();
+
+        // Clear the current PendingJump if the split occurred within the
+        // staring page. Otherwise update destination and bit_path.
+        let (mut split_page, split_page_origin) = if first_half_bit_path.is_empty() {
+            let source = self.remove_pending_jump(jump_idx, parent_elision_data);
+            match source {
+                Some((_page_id, mut page, page_origin)) =>{
+                    // Re-use the page and the source.
+                    page.set_jump_tag(false);
+                    split_page_diff.set_jump(false);
+                    (page, page_origin.bucket_info())
+                },
+                None => (page_set.fresh(), None),
+            }
+        } else {
+            jump.destination_page_id = split_page_id.clone();
+            jump.bit_path = first_half_bit_path;
+            (page_set.fresh(), None)
+        };
+
         match maybe_jump_node {
             // Fill the split page up to the jump_node_layers with the jump node,
             // if it is a valid internal node.
@@ -362,8 +386,6 @@ impl PendingJumps {
         // only extracting the elided_children field that will be moved to the split page.
         // Meanwhile, the split page will store the pending jump's children_leaves_counter value
         // in the children_leaves_counter and prev_children_leaves_counter.
-        let mut split_page_elision_data = jump.elision_data.clone();
-        jump.elision_data.elided_children = ElidedChildren::new();
         match &split_page_elision_data.children_leaves_counter {
             Some(leaves) if *leaves > 0 => {
                 split_page_elision_data.prev_children_leaves_counter =
@@ -381,15 +403,6 @@ impl PendingJumps {
         // with the second half pending jump.
         if !second_half_bit_path.is_empty() {
             split_page_elision_data.elided_children = ElidedChildren::new();
-        }
-
-        // Clear the current PendingJump if the split occurred within the
-        // staring page. Otherwise update destination and bit_path.
-        if first_half_bit_path.is_empty() {
-            self.remove_pending_jump(jump_idx, parent_elision_data);
-        } else {
-            jump.destination_page_id = split_page_id.clone();
-            jump.bit_path = first_half_bit_path;
         }
 
         let second_half_bit_path_len = second_half_bit_path.len();
@@ -423,6 +436,7 @@ impl PendingJumps {
         SplitJumpResult::Split {
             split_page_id,
             split_page,
+            split_page_origin,
             split_page_diff,
             split_page_elision_data,
             jumped_bits: second_half_bit_path_len,
@@ -443,6 +457,9 @@ enum SplitJumpResult {
         /// Page containing a portion of the previous jump,
         /// up to the split point.
         split_page: PageMut,
+        /// The origin of the split page if the split occurred within the first page
+        /// of the jump.
+        split_page_origin: Option<BucketInfo>,
         /// Page diff associated with the the fill of the split page.
         split_page_diff: PageDiff,
         /// Elision data associated to the split page.
@@ -1041,6 +1058,7 @@ impl<H: NodeHasher> PageWalker<H> {
             SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 jumped_bits,
                 pending_jump,
                 split_page_diff,
@@ -1051,7 +1069,7 @@ impl<H: NodeHasher> PageWalker<H> {
                     page_id: split_page_id,
                     page: split_page,
                     diff: split_page_diff,
-                    bucket_info: None,
+                    bucket_info: split_page_origin,
                     pending_jumps: PendingJumps { jumps: vec![] },
                 };
 
@@ -1665,6 +1683,7 @@ impl<H: NodeHasher> PageWalker<H> {
             SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 split_page_diff,
                 split_page_elision_data,
                 pending_jump,
@@ -1675,7 +1694,7 @@ impl<H: NodeHasher> PageWalker<H> {
                     page_id: split_page_id,
                     page: split_page,
                     diff: split_page_diff,
-                    bucket_info: None,
+                    bucket_info: split_page_origin,
                     pending_jumps: PendingJumps { jumps: vec![] },
                 };
                 if let Some(pending_jump) = pending_jump {
@@ -2010,6 +2029,7 @@ impl<H: NodeHasher> PageWalker<H> {
             let SplitJumpResult::Split {
                 split_page_id,
                 split_page,
+                split_page_origin,
                 split_page_diff,
                 split_page_elision_data,
                 pending_jump,
@@ -2031,7 +2051,7 @@ impl<H: NodeHasher> PageWalker<H> {
                 page_id: split_page_id.clone(),
                 page: split_page,
                 diff: split_page_diff,
-                bucket_info: None,
+                bucket_info: split_page_origin,
                 pending_jumps: PendingJumps { jumps: vec![] },
             };
 
@@ -2483,7 +2503,7 @@ impl<H: NodeHasher> PageWalker<H> {
         let mut page = page_set.fresh();
 
         let mut diff = PageDiff::from_jump_page(pending_jump.bit_path.len());
-        diff.set_jump();
+        diff.set_jump(true);
         page.tag_jump_page(node, pending_jump.bit_path);
 
         if self.reconstruction {
