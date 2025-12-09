@@ -29,6 +29,7 @@ use nomt_core::{
     trie_pos::TriePosition,
 };
 
+use std::cmp::Ordering;
 use std::collections::{
     hash_map::{Entry, HashMap},
     VecDeque,
@@ -296,6 +297,7 @@ impl SeekRequest {
 
     fn continue_leaf_fetch<H: HashAlgorithm>(&mut self, leaf: Option<LeafNodeRef>) {
         let RequestState::FetchingLeaf {
+            ref mut overlay_deletions,
             ref mut beatree_iterator,
             ..
         } = self.state
@@ -307,13 +309,56 @@ impl SeekRequest {
             beatree_iterator.provide_leaf(leaf);
         }
 
-        let (key, value_hash) = match beatree_iterator.next() {
-            None => panic!("leaf must exist position={}", self.position.path()),
-            Some(IterOutput::Blocked) => return,
-            Some(IterOutput::Item(key, value)) => {
-                (key, H::hash_value(&value)) // hash
+        let manage_deletions = |deletions: &[KeyPath], mut cur_idx: usize, key: &KeyPath| {
+            while cur_idx < deletions.len() {
+                match key.cmp(&deletions[cur_idx]) {
+                    Ordering::Less => {
+                        // key is before the deletion
+                        break;
+                    }
+                    Ordering::Equal => {
+                        cur_idx += 1;
+                        return (cur_idx, true);
+                    }
+                    Ordering::Greater => {
+                        // deletion is before the key. move on until we find a match or go past
+                        cur_idx += 1;
+                    }
+                }
             }
-            Some(IterOutput::OverflowItem(key, value_hash, _)) => (key, value_hash),
+
+            (cur_idx, false)
+        };
+
+        let mut deletions_idx = 0;
+        let (key, value_hash) = loop {
+            match beatree_iterator.next() {
+                None => panic!("leaf must exist position={}", self.position.path()),
+                Some(IterOutput::Blocked) => {
+                    overlay_deletions.drain(..deletions_idx);
+                    return;
+                }
+                Some(IterOutput::Item(key, value)) => {
+                    let (new_d_idx, should_skip) =
+                        manage_deletions(&overlay_deletions, deletions_idx, &key);
+                    deletions_idx = new_d_idx;
+                    if should_skip {
+                        continue;
+                    }
+
+                    break (key, H::hash_value(&value));
+                }
+                Some(IterOutput::OverflowItem(key, value_hash, _)) => {
+                    let (new_d_idx, should_skip) =
+                        manage_deletions(&overlay_deletions, deletions_idx, &key);
+                    deletions_idx = new_d_idx;
+                    if should_skip {
+                        continue;
+                    }
+
+                    break (key, value_hash);
+                }
+            }
         };
 
         self.state = RequestState::Completed(Some(trie::LeafData {
@@ -466,6 +511,7 @@ enum RequestState {
     // Fetching one leaf
     FetchingLeaf {
         beatree_iterator: BeatreeIterator,
+        overlay_deletions: Vec<KeyPath>,
         needed_leaves: NeededLeavesIter,
     },
     // Fetching multiple leaves to construct elided pages
@@ -489,16 +535,19 @@ impl RequestState {
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
-        // First see if the item is present within the overlay.
-        let overlay_item = overlay
-            .value_iter(&start, end.as_ref())
-            .filter(|(_, v)| v.as_option().is_some())
-            .next();
+        let overlay_items = overlay.value_iter(&start, end.as_ref());
+        let mut overlay_deletions = vec![];
 
-        if let Some((key_path, overlay_leaf)) = overlay_item {
-            let value_hash = match overlay_leaf {
-                // PANIC: we filtered out all deletions above.
-                ValueChange::Delete => panic!(),
+        for (key_path, overlay_change) in overlay_items {
+            let value_hash = match overlay_change {
+                ValueChange::Delete => {
+                    // All deletes must be collected to filter out from the beatree iterator.
+                    overlay_deletions.push(key_path);
+                    continue;
+                }
+
+                // If an insertion is found within the overlay, it is expected to be
+                // the item associated with the leaf that is being fetched.
                 ValueChange::Insert(value) => H::hash_value(value),
                 ValueChange::InsertOverflow(_, value_hash) => value_hash.clone(),
             };
@@ -515,6 +564,7 @@ impl RequestState {
         let needed_leaves = beatree_iterator.needed_leaves();
         RequestState::FetchingLeaf {
             beatree_iterator,
+            overlay_deletions,
             needed_leaves,
         }
     }
