@@ -21,6 +21,7 @@ const ROOT_KEY: &[u8] = b"root";
 
 pub struct SpTrieDB {
     pub kvdb: Arc<dyn KeyValueDB>,
+    pub shared_cache: SharedTrieCache,
     pub root: Hash,
 }
 
@@ -45,7 +46,14 @@ impl SpTrieDB {
             Some(r) => Hash::from_slice(&r[..32]),
         };
 
-        Self { kvdb, root }
+        let shared_cache =
+            sp_trie::cache::SharedTrieCache::new(sp_trie::cache::CacheSize::new(4 * (1 << 30)));
+
+        Self {
+            kvdb,
+            shared_cache,
+            root,
+        }
     }
 
     pub fn execute(&mut self, mut timer: Option<&mut Timer>, workload: &mut dyn Workload) {
@@ -60,16 +68,21 @@ impl SpTrieDB {
         };
 
         let recorder: sp_trie::recorder::Recorder<Hasher> = Default::default();
-        let _timer_guard_commit = {
-            let mut trie_recorder = recorder.as_trie_recorder(new_root);
 
+        let local_cache = self.shared_cache.local_cache();
+        let mut cache = local_cache.as_trie_db_cache(new_root.clone());
+
+        let _timer_guard_commit = {
+            let mut trie_recorder = recorder.as_trie_recorder(new_root.clone());
             let trie_db_mut = if self.root == Hash::default() {
                 TrieDBMutBuilderV1::new(&mut trie, &mut new_root)
                     .with_recorder(&mut trie_recorder)
+                    .with_cache(&mut cache)
                     .build()
             } else {
                 TrieDBMutBuilderV1::from_existing(&mut trie, &mut new_root)
                     .with_recorder(&mut trie_recorder)
+                    .with_cache(&mut cache)
                     .build()
             };
 
@@ -86,8 +99,11 @@ impl SpTrieDB {
             let timer_guard_commit = timer.as_mut().map(|t| t.record_span("commit_and_prove"));
 
             trie_db_mut.commit();
+            drop(trie_db_mut);
             timer_guard_commit
         };
+
+        cache.merge_into(&local_cache, new_root.clone());
 
         let _proof = recorder.drain_storage_proof().is_empty();
 
