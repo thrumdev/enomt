@@ -19,11 +19,12 @@ pub const MAX_TRIE_DEPTH: usize = MAX_KEY_PATH_LEN * 8;
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
 pub struct TriePosition {
     // The bits after depth are irrelevant.
     path: Vec<u8>,
     depth: u16,
-    node_index: usize,
+    node_index: u8,
 }
 
 impl PartialEq for TriePosition {
@@ -130,13 +131,14 @@ impl TriePosition {
         );
 
         if self.depth as usize % DEPTH == 0 {
-            self.node_index = bit as usize;
+            self.node_index = bit as u8;
         } else {
             let children = self.child_node_indices();
+            // UNWRAPs: children are not expected to exceed the max index of a page.
             self.node_index = if bit {
-                children.right()
+                children.right().try_into().unwrap()
             } else {
-                children.left()
+                children.left().try_into().unwrap()
             };
         }
 
@@ -228,7 +230,7 @@ impl TriePosition {
     /// Panics if the position is not in the last layer of the page.
     pub fn child_page_index(&self) -> ChildPageIndex {
         assert!(self.node_index >= 62);
-        ChildPageIndex::new(bottom_node_index(self.node_index)).unwrap()
+        ChildPageIndex::new(bottom_node_index(self.node_index as usize)).unwrap()
     }
 
     /// Get the child page index, relative to the current page,
@@ -236,7 +238,7 @@ impl TriePosition {
     ///
     /// Panics if the position is not in the last layer of the page.
     pub fn sibling_child_page_index(&self) -> ChildPageIndex {
-        ChildPageIndex::new(bottom_node_index(sibling_index(self.node_index))).unwrap()
+        ChildPageIndex::new(bottom_node_index(sibling_index(self.node_index) as usize)).unwrap()
     }
 
     /// Transform a bit-path to the index in a page corresponding to the child node indices.
@@ -247,18 +249,18 @@ impl TriePosition {
         if depth == 0 || depth > DEPTH - 1 {
             panic!("{depth} out of bounds 1..={}", DEPTH - 1);
         }
-        let left = self.node_index * 2 + 2;
+        let left = self.node_index as usize * 2 + 2;
         ChildNodeIndices(left)
     }
 
     /// Get the index of the sibling node within a page.
     pub fn sibling_index(&self) -> usize {
-        sibling_index(self.node_index)
+        sibling_index(self.node_index) as usize
     }
 
     /// Get the index of the current node within a page.
     pub fn node_index(&self) -> usize {
-        self.node_index
+        self.node_index as usize
     }
 
     /// Get the number of bits traversed in the current page.
@@ -315,14 +317,14 @@ fn last_page_path(path: &Vec<u8>, depth: u16) -> &BitSlice<u8, Msb0> {
 //
 // The expected length of the page path is between 1 and `DEPTH`, inclusive. A length of 0 returns
 // 0 and all bits beyond `DEPTH` are ignored.
-fn node_index(page_path: &BitSlice<u8, Msb0>) -> usize {
+fn node_index(page_path: &BitSlice<u8, Msb0>) -> u8 {
     let depth = core::cmp::min(DEPTH, page_path.len());
 
     if depth == 0 {
         0
     } else {
         // each node is stored at (2^depth - 2) + as_uint(path)
-        (1 << depth) - 2 + page_path[..depth].load_be::<usize>()
+        (1 << depth) - 2 + page_path[..depth].load_be::<u8>()
     }
 }
 
@@ -331,7 +333,7 @@ fn bottom_node_index(node_index: usize) -> u8 {
 }
 
 /// Given a node index, get the index of the sibling.
-fn sibling_index(node_index: usize) -> usize {
+fn sibling_index(node_index: u8) -> u8 {
     if node_index % 2 == 0 {
         node_index + 1
     } else {
@@ -343,7 +345,7 @@ fn sibling_index(node_index: usize) -> usize {
 // Id does not check for an overflow of the maximum valid node index
 // and panics if the provided node_index is one of the first two
 // nodes in a page, thus node_index 0 or 1
-fn parent_node_index(node_index: usize) -> usize {
+fn parent_node_index(node_index: u8) -> u8 {
     (node_index - 2) / 2
 }
 

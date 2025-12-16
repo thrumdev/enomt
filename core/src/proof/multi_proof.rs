@@ -109,7 +109,7 @@ impl PathProofRange {
             let remaining_covered_bits = chunks_depth - self.path_bit_index;
             assert_eq!(chunks_depth - remaining_covered_bits, self.path_bit_index);
             let mut unique_chunks = path_proof.sibling_chunks[n_chunks - 1..].to_vec();
-            unique_chunks[0] = SiblingChunk::Terminators(remaining_covered_bits);
+            unique_chunks[0] = SiblingChunk::new_terminators_chunk(remaining_covered_bits);
             unique_chunks
         } else {
             // unique sibling_chunks start right after the siblign associated
@@ -831,17 +831,19 @@ impl CommonSiblings {
                 Some((node, 1))
             }
             Some((depth_start, SiblingChunk::Terminators(covered_layers)))
-                if depth == depth_start + covered_layers - 1 =>
+                if depth == depth_start + *covered_layers as usize - 1 =>
             {
                 let delta_layer = depth - next_depth;
-                let covered = core::cmp::min(*covered_layers, delta_layer);
-                let remaining_layers = covered_layers - covered;
+                let covered = core::cmp::min(*covered_layers as usize, delta_layer);
+                let remaining_layers = *covered_layers as usize - covered;
                 let depth_start = *depth_start;
                 self.stack.pop();
 
                 if remaining_layers > 0 {
-                    self.stack
-                        .push((depth_start, SiblingChunk::Terminators(remaining_layers)));
+                    self.stack.push((
+                        depth_start,
+                        SiblingChunk::new_terminators_chunk(remaining_layers),
+                    ));
                 }
                 Some((TERMINATOR, covered))
             }
