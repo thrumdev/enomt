@@ -473,17 +473,19 @@ impl UpdateHandle {
                                 Some(_) | None => None,
                             };
 
+                            // UNWRAP: the number of items within the proof is not expected to exceed the limit.
                             witness.operations.reads.push(WitnessedRead {
                                 key: k.clone(),
                                 value: value_hash,
-                                path_index: path_index + path_proof_offset,
+                                path_index: (path_index + path_proof_offset).try_into().unwrap(),
                             });
                         }
                         if let Some(written) = v.written_value() {
+                            // UNWRAP: the number of items within the proof is not expected to exceed the limit.
                             witness.operations.writes.push(WitnessedWrite {
                                 key: k.clone(),
                                 value: written,
-                                path_index: path_index + path_proof_offset,
+                                path_index: (path_index + path_proof_offset).try_into().unwrap(),
                             });
                         }
                     }

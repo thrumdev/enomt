@@ -19,6 +19,7 @@ use alloc::{vec, vec::Vec};
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
 pub enum PathProofTerminal {
     Leaf(LeafData),
     CollisionLeaf(LeafData, Vec<(u16, ValueHash)>),
@@ -77,15 +78,24 @@ impl PathProofTerminal {
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
 pub enum SiblingChunk {
     /// A unique sibling node within the trie
     Sibling(Node),
     /// A chunk of terminator nodes that can be represented
     /// by the number of bits it covers.
-    Terminators(usize),
+    Terminators(u16),
 }
 
 impl SiblingChunk {
+    // Crete a chunk of terminators.
+    //
+    // Panics if terminators exceed the depth of the merkle trie.
+    pub fn new_terminators_chunk(terminators: usize) -> Self {
+        assert!(trie::MAX_KEY_PATH_LEN * 8 > terminators);
+        SiblingChunk::Terminators(terminators as u16)
+    }
+
     /// Extract the node associated with the chunk.
     pub fn node(&self) -> Node {
         match self {
@@ -98,7 +108,7 @@ impl SiblingChunk {
     pub fn covered_layers(&self) -> usize {
         match self {
             SiblingChunk::Sibling(_) => 1,
-            SiblingChunk::Terminators(layers) => *layers,
+            SiblingChunk::Terminators(layers) => *layers as usize,
         }
     }
 
@@ -106,7 +116,8 @@ impl SiblingChunk {
     /// if successful, otherwise, return the provided SiblingChunk as an error.
     pub fn try_comapct(&mut self, next: SiblingChunk) -> Result<(), SiblingChunk> {
         if self.node() == next.node() {
-            *self = SiblingChunk::Terminators(self.covered_layers() + next.covered_layers());
+            *self =
+                SiblingChunk::new_terminators_chunk(self.covered_layers() + next.covered_layers());
             Ok(())
         } else {
             Err(next)
@@ -127,12 +138,13 @@ impl SiblingChunk {
 }
 
 /// A proof of some particular path through the trie.
-#[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathProof {
     /// The terminal node encountered when looking up a key. This is always either a terminator or
     /// leaf.
@@ -561,11 +573,13 @@ pub fn verify_update<H: NodeHasher>(
                             pending_siblings.last().map(|p| p.1).unwrap_or(end_layer),
                             end_layer,
                         );
-                        let delta_layer = cur_layer - next_depth;
+
+                        // UNWRAP: delta is not expected to be bigger than the max depth of the merkle trie.
+                        let delta_layer: u16 = (cur_layer - next_depth).try_into().unwrap();
                         let covered_by_sibling = core::cmp::min(*remaining_layers, delta_layer);
 
                         *remaining_layers -= covered_by_sibling;
-                        cur_layer -= covered_by_sibling;
+                        cur_layer -= covered_by_sibling as usize;
 
                         for _ in 0..covered_by_sibling {
                             bit_path_iter.next();

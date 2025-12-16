@@ -246,7 +246,7 @@ impl SeekRequest {
             if record_siblings {
                 if divergence_bit_idx != 0 {
                     self.sibling_chunks
-                        .push(SiblingChunk::Terminators(divergence_bit_idx));
+                        .push(SiblingChunk::new_terminators_chunk(divergence_bit_idx));
                 }
                 self.sibling_chunks.push(SiblingChunk::Sibling(jump_node));
             }
@@ -267,7 +267,7 @@ impl SeekRequest {
 
         if record_siblings {
             self.sibling_chunks
-                .push(SiblingChunk::Terminators(partial_path.len()));
+                .push(SiblingChunk::new_terminators_chunk(partial_path.len()));
         }
 
         for bit in partial_path {

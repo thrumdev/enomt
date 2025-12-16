@@ -28,8 +28,8 @@ fn main() -> Result<()> {
             .operations
             .reads
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             match read.value {
                 // Check for non-existence if the return value was None
@@ -59,8 +59,8 @@ fn main() -> Result<()> {
             .operations
             .writes
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             write_ops.push((write.key.clone(), write.value));
         }
