@@ -834,7 +834,7 @@ impl CommonSiblings {
                 if depth == depth_start + covered_layers - 1 =>
             {
                 let delta_layer = depth - next_depth;
-                let covered = std::cmp::min(*covered_layers, delta_layer);
+                let covered = core::cmp::min(*covered_layers, delta_layer);
                 let remaining_layers = covered_layers - covered;
                 let depth_start = *depth_start;
                 self.stack.pop();
@@ -1038,7 +1038,7 @@ fn hash_and_compact_terminal<H: NodeHasher>(
             // UNWRAP: guaranteed to exist.
             pending_siblings.pop().unwrap().0
         } else {
-            let next_depth = std::cmp::max(
+            let next_depth = core::cmp::max(
                 pending_siblings.last().map(|p| p.1).unwrap_or(end_layer),
                 end_layer,
             );

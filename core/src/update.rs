@@ -287,7 +287,7 @@ pub fn build_trie<H: NodeHasher>(
 
         let mut bits = this_key.view_bits::<Msb0>().to_bitvec();
         if bits.len() < leaf_end_bit {
-            bits.extend(std::iter::repeat(false).take(leaf_end_bit - bits.len()));
+            bits.extend(core::iter::repeat(false).take(leaf_end_bit - bits.len()));
         }
 
         visit(WriteNode::Leaf {
@@ -305,7 +305,7 @@ pub fn build_trie<H: NodeHasher>(
             // next_depth cannot be smaller than the target, it could happen
             // that pending siblings are higher within the subtree,
             // higher than the next subtree that needs to be built.
-            let next_depth = std::cmp::max(
+            let next_depth = core::cmp::max(
                 pending_siblings.last().map(|l| l.1).unwrap_or(target_depth),
                 target_depth,
             );

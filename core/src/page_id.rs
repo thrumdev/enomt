@@ -13,6 +13,9 @@ use crate::{
 use bitvec::prelude::*;
 use ruint::Uint;
 
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
 pub const MAX_PAGE_DEPTH: usize = (MAX_KEY_PATH_LEN * 8) / 6;
 
 /// A unique ID for a page.
@@ -166,7 +169,7 @@ impl PageId {
     pub fn max_key_path(&self) -> KeyPath {
         let mut path = self.min_key_path();
         path.view_bits_mut::<Msb0>()[6 * self.path.len()..].fill(true);
-        path.extend(std::iter::repeat(255).take(MAX_KEY_PATH_LEN - path.len()));
+        path.extend(core::iter::repeat(255).take(MAX_KEY_PATH_LEN - path.len()));
         path
     }
 }

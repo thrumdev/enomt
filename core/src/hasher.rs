@@ -3,7 +3,7 @@
 use crate::trie::{InternalData, LeafData, LeafDataRef, Node, NodeKind, TERMINATOR};
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use bitvec::{order::Msb0, slice::BitSlice};
 
