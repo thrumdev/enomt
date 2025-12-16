@@ -6,6 +6,9 @@ use crate::{
 use alloc::fmt;
 use bitvec::prelude::*;
 
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
 // The maximum depth of the trie
 pub const MAX_TRIE_DEPTH: usize = MAX_KEY_PATH_LEN * 8;
 
@@ -288,7 +291,7 @@ impl TriePosition {
     pub fn subtrie_contains(&self, path: &crate::trie::KeyPath) -> bool {
         let subtree_root_path_bits = self.path.view_bits::<Msb0>();
         let path_bits = path.view_bits::<Msb0>();
-        let min_depth = std::cmp::min(self.depth as usize, path_bits.len());
+        let min_depth = core::cmp::min(self.depth as usize, path_bits.len());
         // A key that is part of a node's subtree must have the path to
         // the subtree as a prefix. The key can be smaller in bytes than
         // the path, but it is always padded with zeros.

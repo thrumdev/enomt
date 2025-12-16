@@ -9,7 +9,7 @@ use bitvec::prelude::*;
 use core::fmt;
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 /// Wrapper for a terminal node, it will store the LeafData if it is a leaf node,
 /// and just the KeyPath to that terminal if it is a terminator node
@@ -557,12 +557,12 @@ pub fn verify_update<H: NodeHasher>(
             } else {
                 match last_sibling_chunk.as_mut() {
                     Some(SiblingChunk::Terminators(remaining_layers)) if *remaining_layers > 0 => {
-                        let next_depth = std::cmp::max(
+                        let next_depth = core::cmp::max(
                             pending_siblings.last().map(|p| p.1).unwrap_or(end_layer),
                             end_layer,
                         );
                         let delta_layer = cur_layer - next_depth;
-                        let covered_by_sibling = std::cmp::min(*remaining_layers, delta_layer);
+                        let covered_by_sibling = core::cmp::min(*remaining_layers, delta_layer);
 
                         *remaining_layers -= covered_by_sibling;
                         cur_layer -= covered_by_sibling;

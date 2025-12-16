@@ -9,6 +9,9 @@ use crate::{
 };
 use core::ops::Range;
 
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
 /// The collision key associated with a key is simply its encoded length.
 pub fn collision_key(key: &KeyPath) -> Vec<u8> {
     (key.len() as u16).to_be_bytes().to_vec()
