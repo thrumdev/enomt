@@ -22,26 +22,28 @@ use core::{cmp::Ordering, ops::Range};
 use super::{path_proof::SiblingChunk, sibling_chunks_depth};
 
 /// This struct includes the terminal node and its depth
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
 pub struct MultiPathProof {
     /// Terminal node
     pub terminal: PathProofTerminal,
     /// Depth of the terminal node
-    pub depth: usize,
+    pub depth: u16,
 }
 
 /// A proof of multiple paths through the trie.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
 pub struct MultiProof {
     /// List of all provable paths. These are sorted in ascending order by bit-path
     pub paths: Vec<MultiPathProof>,
@@ -109,7 +111,7 @@ impl PathProofRange {
             let remaining_covered_bits = chunks_depth - self.path_bit_index;
             assert_eq!(chunks_depth - remaining_covered_bits, self.path_bit_index);
             let mut unique_chunks = path_proof.sibling_chunks[n_chunks - 1..].to_vec();
-            unique_chunks[0] = SiblingChunk::Terminators(remaining_covered_bits);
+            unique_chunks[0] = SiblingChunk::new_terminators_chunk(remaining_covered_bits);
             unique_chunks
         } else {
             // unique sibling_chunks start right after the siblign associated
@@ -120,7 +122,10 @@ impl PathProofRange {
         Some((
             MultiPathProof {
                 terminal: path_proof.terminal.clone(),
-                depth: self.path_bit_index + sibling_chunks_depth(&unique_chunks),
+                // UNWRAP: the depth of the trie is not expected te exceed 1KiB.
+                depth: (self.path_bit_index + sibling_chunks_depth(&unique_chunks))
+                    .try_into()
+                    .unwrap(),
             },
             unique_chunks,
         ))
@@ -585,10 +590,10 @@ fn verify_range<H: NodeHasher>(
         // at a terminal node, 'sibling_chunks' will contain all unique
         // nodes, hash them up, and return that
         let terminal_path = &paths[0];
-        let unique_len = terminal_path.depth - start_depth;
+        let unique_len = terminal_path.depth as usize - start_depth;
 
         let mut terminal_bit_path = terminal_path.terminal.path().to_bitvec();
-        terminal_bit_path.resize_with(terminal_path.depth, |_| false);
+        terminal_bit_path.resize_with(terminal_path.depth as usize, |_| false);
 
         if let Some(collision_ops) = terminal_path.terminal.collision_ops() {
             let collision_subtree_root = collisions::build_subtrie::<H>(
@@ -614,7 +619,8 @@ fn verify_range<H: NodeHasher>(
 
         verified_paths.push(VerifiedMultiPath {
             terminal: terminal_path.terminal.clone(),
-            depth: terminal_path.depth,
+            // UNWRAP: the depth of the trie is not expected te exceed 1KiB.
+            depth: terminal_path.depth.try_into().unwrap(),
             unique_chunks: Range {
                 start: sibling_offset,
                 end: sibling_offset + n_chunks,
@@ -831,17 +837,19 @@ impl CommonSiblings {
                 Some((node, 1))
             }
             Some((depth_start, SiblingChunk::Terminators(covered_layers)))
-                if depth == depth_start + covered_layers - 1 =>
+                if depth == depth_start + *covered_layers as usize - 1 =>
             {
                 let delta_layer = depth - next_depth;
-                let covered = core::cmp::min(*covered_layers, delta_layer);
-                let remaining_layers = covered_layers - covered;
+                let covered = core::cmp::min(*covered_layers as usize, delta_layer);
+                let remaining_layers = *covered_layers as usize - covered;
                 let depth_start = *depth_start;
                 self.stack.pop();
 
                 if remaining_layers > 0 {
-                    self.stack
-                        .push((depth_start, SiblingChunk::Terminators(remaining_layers)));
+                    self.stack.push((
+                        depth_start,
+                        SiblingChunk::new_terminators_chunk(remaining_layers),
+                    ));
                 }
                 Some((TERMINATOR, covered))
             }

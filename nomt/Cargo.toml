@@ -32,6 +32,7 @@ thread_local.workspace = true
 cfg-if.workspace = true
 borsh = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+codec = { workspace = true, optional = true, default-features = false, features = ["derive"] }
 
 [target.'cfg(target_os="linux")'.dependencies]
 io-uring.workspace = true
@@ -64,3 +65,4 @@ borsh = ["dep:borsh", "nomt-core/borsh"]
 blake3-hasher = ["nomt-core/blake3-hasher"]
 sha2-hasher = ["nomt-core/sha2-hasher"]
 serde = ["dep:serde", "nomt-core/serde"]
+codec = ["dep:codec"]

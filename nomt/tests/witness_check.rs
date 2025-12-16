@@ -105,8 +105,8 @@ fn witness_with_var_len_keys() {
             .operations
             .reads
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             match read.value {
                 None => assert!(verified.confirm_nonexistence(&read.key).unwrap()),
@@ -128,8 +128,8 @@ fn witness_with_var_len_keys() {
             .operations
             .writes
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             write_ops.push((write.key.clone(), write.value.clone()));
         }
@@ -165,7 +165,7 @@ fn multiproof_with_var_len_keys() {
 
     for read in witness.operations.reads {
         let index = verified_multi_proof.find_index_for(&read.key).unwrap();
-        assert_eq!(index, read.path_index);
+        assert_eq!(index, read.path_index as usize);
 
         match read.value {
             None => {
@@ -279,8 +279,8 @@ fn witness_with_collision_keys() {
             .operations
             .reads
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             match read.value {
                 None => assert!(verified.confirm_nonexistence(&read.key).unwrap()),
@@ -302,8 +302,8 @@ fn witness_with_collision_keys() {
             .operations
             .writes
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             write_ops.push((write.key.clone(), write.value.clone()));
         }
@@ -405,7 +405,7 @@ fn multiproof_with_collision_keys() {
 
     for read in witness.operations.reads {
         let index = verified_multi_proof.find_index_for(&read.key).unwrap();
-        assert_eq!(index, read.path_index);
+        assert_eq!(index, read.path_index as usize);
 
         match read.value {
             None => {
@@ -483,7 +483,7 @@ fn construct_multiproof_with_sibling_chunks_split() {
 
     for read in witness.operations.reads {
         let index = verified_multi_proof.find_index_for(&read.key).unwrap();
-        assert_eq!(index, read.path_index);
+        assert_eq!(index, read.path_index as usize);
 
         match read.value {
             None => {
@@ -557,7 +557,7 @@ fn multiproof_in_between_sibling_chunks() {
 
     for read in witness.operations.reads {
         let index = verified_multi_proof.find_index_for(&read.key).unwrap();
-        assert_eq!(index, read.path_index);
+        assert_eq!(index, read.path_index as usize);
 
         match read.value {
             None => {
@@ -714,8 +714,8 @@ fn produced_witness_validity() {
             .operations
             .reads
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             match read.value {
                 None => assert!(verified.confirm_nonexistence(&read.key).unwrap()),
@@ -740,8 +740,8 @@ fn produced_witness_validity() {
             .operations
             .writes
             .iter()
-            .skip_while(|r| r.path_index != i)
-            .take_while(|r| r.path_index == i)
+            .skip_while(|r| r.path_index != i as u32)
+            .take_while(|r| r.path_index == i as u32)
         {
             write_ops.push((write.key.clone(), write.value.clone()));
         }

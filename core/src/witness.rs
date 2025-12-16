@@ -17,6 +17,8 @@ use alloc::vec::Vec;
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Witness {
     /// Various paths down the trie used as part of this witness.
     /// Note that the paths are not necessarily in lexicographic order.
@@ -31,6 +33,8 @@ pub struct Witness {
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WitnessedOperations {
     /// Read operations.
     pub reads: Vec<WitnessedRead>,
@@ -44,6 +48,8 @@ pub struct WitnessedOperations {
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WitnessedPath {
     /// Proof of a query path along the trie.
     pub inner: PathProof,
@@ -57,13 +63,15 @@ pub struct WitnessedPath {
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WitnessedRead {
     /// The key of the read value.
     pub key: KeyPath,
     /// The hash of the value witnessed. None means no value.
     pub value: Option<ValueHash>,
     /// The index of the path in the corresponding witness.
-    pub path_index: usize,
+    pub path_index: u32,
 }
 
 /// A witness of a write operation.
@@ -72,11 +80,13 @@ pub struct WitnessedRead {
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "codec", derive(codec::Encode, codec::Decode))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WitnessedWrite {
     /// The key of the written value.
     pub key: KeyPath,
     /// The hash of the written value. `None` means "delete".
     pub value: Option<ValueHash>,
     /// The index of the path in the corresponding witness.
-    pub path_index: usize,
+    pub path_index: u32,
 }
