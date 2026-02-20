@@ -499,6 +499,13 @@ impl VerifiedMultiProof {
             }
         }
     }
+
+    /// Iterate over all `PathProofTerminal` contained within the multiproof.
+    pub fn iter_terminals(&self) -> impl core::iter::Iterator<Item = &PathProofTerminal> {
+        self.inner
+            .iter()
+            .map(|verified_path| &verified_path.terminal)
+    }
 }
 
 /// Verify a multi-proof against an expected root. This ONLY checks the consistency of the trie.
