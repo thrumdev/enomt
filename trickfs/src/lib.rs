@@ -946,6 +946,7 @@ pub fn spawn_trick<P: AsRef<Path>>(mountpoint: P, seed: u64) -> std::io::Result<
 mod tests {
     use super::Trick;
     use fuser::MountOption;
+    use serial_test::serial;
     use std::{
         fs,
         io::{Read, Seek, Write as _},
@@ -963,6 +964,7 @@ mod tests {
     //
     // If this fails then something is terribly wrong.
     #[test]
+    #[serial]
     fn mount() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -974,6 +976,7 @@ mod tests {
 
     // Create a file to the file system.
     #[test]
+    #[serial]
     fn create_file() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -987,6 +990,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn create_then_open_file() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -1004,6 +1008,7 @@ mod tests {
     fn inner_write_then_read(fs: Trick) {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
+        dbg!(&mountpoint);
         let options = &[
             MountOption::RW,
             MountOption::AutoUnmount,
@@ -1029,12 +1034,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn write_then_read() {
         let (fs, _handle) = Trick::new(0);
         inner_write_then_read(fs);
     }
 
     #[test]
+    #[serial]
     fn write_then_read_with_latency() {
         let (fs, handle) = Trick::new(0);
         handle.set_trigger_latency_injector(true);
@@ -1046,6 +1053,7 @@ mod tests {
     // This is supposed to test that we can handle many sparse files and that it does not run out
     // of memory.
     #[test]
+    #[serial]
     fn many_files() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -1077,6 +1085,7 @@ mod tests {
 
     /// Create and remove a file.
     #[test]
+    #[serial]
     fn unlink() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -1099,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn mmap_test() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
@@ -1141,6 +1151,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn out_of_space() {
         init_log();
         let mountpoint = tempfile::tempdir().unwrap();
