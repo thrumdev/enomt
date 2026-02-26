@@ -18,3 +18,4 @@ rand_distr.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
+serial_test.workspace = true
