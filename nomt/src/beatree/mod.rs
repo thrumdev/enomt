@@ -20,6 +20,7 @@ pub mod iterator;
 
 mod allocator;
 mod branch;
+mod estimation;
 mod index;
 mod leaf;
 mod leaf_cache;

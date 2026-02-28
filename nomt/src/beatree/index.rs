@@ -43,6 +43,11 @@ impl Index {
         self.first_key_map.insert(separator, branch)
     }
 
+    /// Get a reference to the inner map.
+    pub(super) fn inner(&self) -> &OrdMap<Key, Arc<BranchNode>> {
+        &self.first_key_map
+    }
+
     #[cfg(test)]
     pub fn into_iter(self) -> impl Iterator<Item = (Key, Arc<BranchNode>)> {
         self.first_key_map.into_iter()

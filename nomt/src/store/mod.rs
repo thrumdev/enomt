@@ -223,6 +223,17 @@ impl Store {
         Ok(self.shared.values.lookup(key))
     }
 
+    /// Loads the flat value stored under the given key, along side with
+    /// its neighbors within the merkle trie.
+    pub fn load_value_with_estimation_info(
+        &self,
+        key: KeyPath,
+        overlay: &crate::LiveOverlay,
+        io_pool: &IoPool,
+    ) -> anyhow::Result<()> {
+        todo!()
+    }
+
     /// Loads the value hash stored under the given key.
     pub fn load_value_hash<T: crate::ValueHasher>(
         &self,

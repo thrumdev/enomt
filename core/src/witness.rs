@@ -90,3 +90,24 @@ pub struct WitnessedWrite {
     /// The index of the path in the corresponding witness.
     pub path_index: u32,
 }
+
+/// Data required to handle collisions within the Witness size Estimation logic.
+pub struct CollisionInfo {
+    /// The length in bytes of the first key within the collision group.
+    pub base_key_len: usize,
+    /// The amount of items present within a collision group.
+    pub amount: usize,
+}
+
+/// Data required create an estimation of the finale proof size.
+/// For each lookup within the trie or for every expected writes this struct
+/// needs to be filled and used by the Estimator.
+pub struct EstimationInfo {
+    pub key: KeyPath,
+    pub presence: bool,
+    pub left_neighbor: Option<KeyPath>,
+    pub right_neighbor: Option<KeyPath>,
+    pub additional_neighbor: Option<Vec<u8>>,
+    pub additional_collision: Option<CollisionInfo>,
+    pub collision_info: Option<CollisionInfo>,
+}

@@ -13,7 +13,7 @@ pub use multi_proof::{
     MultiProof, MultiProofVerificationError, VerifiedMultiProof,
 };
 pub use path_proof::{
-    compact_siblings, sibling_chunks_depth, verify_update, KeyOutOfScope, PathProof,
+    compact_siblings, shared_bits, sibling_chunks_depth, verify_update, KeyOutOfScope, PathProof,
     PathProofTerminal, PathProofVerificationError, PathUpdate, SiblingChunk, VerifiedPathProof,
     VerifyUpdateError,
 };

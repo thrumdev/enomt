@@ -351,7 +351,10 @@ impl LiveOverlay {
             .cloned()
     }
 
-    /// TODO: needed by future lookup_with_neighbors.
+    /// Get the closest smaller key in a map to a given key.
+    /// If the map contains the given key, it is returned.
+    ///
+    /// Returns `None` if there are no equal or smaller keys.
     pub(super) fn get_prev_key(&self, mut key: &KeyPath) -> Option<KeyPath> {
         let decrease_key = |key: &KeyPath| -> KeyPath {
             let mut key = key.clone();
@@ -364,7 +367,7 @@ impl LiveOverlay {
         let parent = self.parent.as_ref()?;
         let (prev_key, prev_val) = parent.index.values.get_prev(key)?;
 
-        if prev_key != key && *prev_val >= self.min_seqn {
+        if *prev_val >= self.min_seqn {
             return Some(prev_key.clone());
         }
 
@@ -396,7 +399,9 @@ impl LiveOverlay {
         }
     }
 
-    /// TODO: needed by future lookup_with_neighbors.
+    /// Get the closest greater key in a map to a given key.
+    ///
+    /// Returns `None` if there are no greater keys.
     pub(super) fn get_strictly_next_key(&self, key: &KeyPath) -> Option<&KeyPath> {
         let parent = self.parent.as_ref()?;
         let mut range = parent.index.values.range(key.clone()..);
