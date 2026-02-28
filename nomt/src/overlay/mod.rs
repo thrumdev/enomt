@@ -351,61 +351,18 @@ impl LiveOverlay {
             .cloned()
     }
 
-    /// TODO: needed by future lookup_with_neighbors.
-    pub(super) fn get_prev_key(&self, mut key: &KeyPath) -> Option<KeyPath> {
-        let decrease_key = |key: &KeyPath| -> KeyPath {
-            let mut key = key.clone();
-            if let None = key.pop_if(|last| *last == 0) {
-                key.last_mut().map(|last| *last -= 1);
-            }
-            key
-        };
-
+    /// Get the closest smaller key in a map to a given key.
+    ///
+    /// Returns `None` if there are no smaller keys.
+    pub(super) fn get_strict_prev(&self, key: &KeyPath) -> Option<KeyPath> {
         let parent = self.parent.as_ref()?;
-        let (prev_key, prev_val) = parent.index.values.get_prev(key)?;
-
-        if prev_key != key && *prev_val >= self.min_seqn {
-            return Some(prev_key.clone());
-        }
-
-        // Loop 1: walk backwards to find a valid starting point
-        let fallback_start = vec![0];
-        let mut key = decrease_key(&key);
-        let mut prev_prev_key = loop {
-            match parent.index.values.get_prev(&key) {
-                Some((prev_prev_key, prev_prev_val)) if *prev_prev_val >= self.min_seqn => {
-                    break prev_prev_key
-                }
-                Some((prev_prev_key, _)) => key = decrease_key(prev_prev_key),
-                None => break &fallback_start,
-            }
-        };
-
-        let mut start_from_valid = prev_prev_key != &fallback_start;
-        loop {
-            match self.get_strictly_next_key(prev_prev_key)? {
-                next_key if next_key >= prev_key && start_from_valid => {
-                    break Some(prev_prev_key.clone())
-                }
-                next_key if next_key >= prev_key => break None,
-                next_key => {
-                    prev_prev_key = next_key;
-                    start_from_valid = true;
-                }
-            }
-        }
-    }
-
-    /// TODO: needed by future lookup_with_neighbors.
-    pub(super) fn get_strictly_next_key(&self, key: &KeyPath) -> Option<&KeyPath> {
-        let parent = self.parent.as_ref()?;
-        let mut range = parent.index.values.range(key.clone()..);
+        let mut prev_key_iter = parent.index.values.range(..key.clone());
 
         loop {
-            match range.next()? {
-                (next_key, seqn) if *seqn < self.min_seqn => continue,
-                (next_key, _) if next_key == key => continue,
-                (next_key, _) => break Some(next_key),
+            let (prev_key, prev_val) = prev_key_iter.next_back()?;
+
+            if *prev_val >= self.min_seqn {
+                return Some(prev_key.clone());
             }
         }
     }
