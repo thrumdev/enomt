@@ -125,11 +125,11 @@ impl Test {
         }
     }
 
-    pub fn iterator(
-        &mut self,
+    pub fn iterator<'a>(
+        &'a mut self,
         start: KeyPath,
         end: Option<KeyPath>,
-    ) -> impl Iterator<Item = (KeyPath, nomt::Value)> {
+    ) -> impl Iterator<Item = (KeyPath, nomt::Value)> + 'a {
         self.session.as_mut().unwrap().iterator(start, end)
     }
 

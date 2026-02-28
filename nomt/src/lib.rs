@@ -20,7 +20,6 @@ use page_cache::PageCache;
 use parking_lot::{ArcRwLockReadGuard, Mutex, RwLock};
 use store::{Store, ValueTransaction};
 
-pub use beatree::KeyValueIterator;
 pub use io::IoUringPermission;
 pub use nomt_core::hasher;
 pub use nomt_core::proof;
@@ -29,7 +28,7 @@ pub use nomt_core::witness::{
     Witness, WitnessedOperations, WitnessedPath, WitnessedRead, WitnessedWrite,
 };
 pub use options::{Options, PanicOnSyncMode};
-pub use overlay::{InvalidAncestors, Overlay};
+pub use overlay::{InvalidAncestors, NomtIterator, Overlay};
 pub use store::HashTableUtilization;
 
 // beatree module needs to be exposed to be benchmarked and fuzzed
@@ -520,10 +519,14 @@ impl<T> Session<T> {
 
     /// Synchronously iterate over all key-value pairs from the specified start key
     /// up to the specified end key, if provided.
-    pub fn iterator(&mut self, start: KeyPath, end: Option<KeyPath>) -> KeyValueIterator {
-        self.store
-            .read_transaction()
-            .iterator(self.store.io_pool(), start, end)
+    pub fn iterator<'a>(&'a mut self, start: KeyPath, end: Option<KeyPath>) -> NomtIterator<'a> {
+        NomtIterator::new(
+            self.store.io_pool(),
+            self.store.read_transaction(),
+            &self.overlay,
+            start,
+            end,
+        )
     }
 
     /// Returns the [`Root`] at which this session is based off of.

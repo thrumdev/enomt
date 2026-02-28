@@ -29,6 +29,10 @@ use std::sync::{
     Arc, Weak,
 };
 
+mod iterator;
+
+pub use iterator::NomtIterator;
+
 /// An in-memory overlay of merkle tree and b-tree changes.
 pub struct Overlay {
     inner: Arc<OverlayInner>,
@@ -347,6 +351,65 @@ impl LiveOverlay {
             .cloned()
     }
 
+    /// TODO: needed by future lookup_with_neighbors.
+    pub(super) fn get_prev_key(&self, mut key: &KeyPath) -> Option<KeyPath> {
+        let decrease_key = |key: &KeyPath| -> KeyPath {
+            let mut key = key.clone();
+            if let None = key.pop_if(|last| *last == 0) {
+                key.last_mut().map(|last| *last -= 1);
+            }
+            key
+        };
+
+        let parent = self.parent.as_ref()?;
+        let (prev_key, prev_val) = parent.index.values.get_prev(key)?;
+
+        if prev_key != key && *prev_val >= self.min_seqn {
+            return Some(prev_key.clone());
+        }
+
+        // Loop 1: walk backwards to find a valid starting point
+        let fallback_start = vec![0];
+        let mut key = decrease_key(&key);
+        let mut prev_prev_key = loop {
+            match parent.index.values.get_prev(&key) {
+                Some((prev_prev_key, prev_prev_val)) if *prev_prev_val >= self.min_seqn => {
+                    break prev_prev_key
+                }
+                Some((prev_prev_key, _)) => key = decrease_key(prev_prev_key),
+                None => break &fallback_start,
+            }
+        };
+
+        let mut start_from_valid = prev_prev_key != &fallback_start;
+        loop {
+            match self.get_strictly_next_key(prev_prev_key)? {
+                next_key if next_key >= prev_key && start_from_valid => {
+                    break Some(prev_prev_key.clone())
+                }
+                next_key if next_key >= prev_key => break None,
+                next_key => {
+                    prev_prev_key = next_key;
+                    start_from_valid = true;
+                }
+            }
+        }
+    }
+
+    /// TODO: needed by future lookup_with_neighbors.
+    pub(super) fn get_strictly_next_key(&self, key: &KeyPath) -> Option<&KeyPath> {
+        let parent = self.parent.as_ref()?;
+        let mut range = parent.index.values.range(key.clone()..);
+
+        loop {
+            match range.next()? {
+                (next_key, seqn) if *seqn < self.min_seqn => continue,
+                (next_key, _) if next_key == key => continue,
+                (next_key, _) => break Some(next_key),
+            }
+        }
+    }
+
     fn value_inner(&self, key: &KeyPath, seqn_diff: u64) -> &ValueChange {
         if seqn_diff as usize == self.ancestor_data.len() {
             // UNWRAP: parent existence checked above
@@ -364,8 +427,8 @@ impl LiveOverlay {
     /// Iterate all value changes within the given key bounds.
     pub(super) fn value_iter<'a>(
         &'a self,
-        start: &'a KeyPath,
-        end: Option<&'a KeyPath>,
+        start: KeyPath,
+        end: Option<KeyPath>,
     ) -> impl Iterator<Item = (KeyPath, &'a ValueChange)> {
         self.parent
             .as_ref()
@@ -373,7 +436,7 @@ impl LiveOverlay {
                 parent
                     .index
                     .values
-                    .range(start.clone()..)
+                    .range(start..)
                     .take_while(move |(k, _)| end.as_ref().map_or(true, |end| end > k))
                     .filter_map(|(k, seqn)| seqn.checked_sub(self.min_seqn).map(|s| (k, s)))
                     .map(|(k, seqn_diff)| (k.clone(), self.value_inner(k, seqn_diff)))

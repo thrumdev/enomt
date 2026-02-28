@@ -406,7 +406,7 @@ impl SeekRequest {
         // All values in the range have been collected from the leaves,
         // now they need to be intersected with what resides in the overlay.
         let mut final_leaf_data_collection = Vec::with_capacity(collected_leaf_data.len());
-        let overlay_leaves = overlay.value_iter(&range.0, range.1.as_ref());
+        let overlay_leaves = overlay.value_iter(range.0.clone(), range.1.clone());
 
         if collected_leaf_data.is_empty() {
             let leaves_data = overlay_leaves.filter_map(|(overlay_key, overlay_valuechange)| {
@@ -535,7 +535,7 @@ impl RequestState {
     ) -> Self {
         let (start, end) = range_bounds(pos.raw_path(), pos.depth() as usize);
 
-        let overlay_items = overlay.value_iter(&start, end.as_ref());
+        let overlay_items = overlay.value_iter(start.clone(), end.clone());
         let mut overlay_deletions = vec![];
 
         for (key_path, overlay_change) in overlay_items {
