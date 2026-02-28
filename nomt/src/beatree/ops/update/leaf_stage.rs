@@ -223,6 +223,10 @@ fn apply_worker_changes(
 // who share the pages they have worked on with the extension range protocol.
 // This function filters some work to avoid the incorrect elimination of pages.
 fn filter_leaves_changeset(leaf_changeset: &mut Vec<(Key, Option<PageNumber>)>) {
+    if leaf_changeset.len() < 2 {
+        return;
+    }
+
     leaf_changeset.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
     let mut to_remove = vec![];
     // If there are two changes with the same separator produced

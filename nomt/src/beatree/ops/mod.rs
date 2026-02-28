@@ -85,13 +85,21 @@ pub fn finish_lookup_async(
         .transpose()
 }
 
-fn leaf_lookup_blocking(
+pub(super) fn leaf_lookup_blocking(
     key: &Key,
     bbn_index: &Index,
     leaf_cache: &LeafCache,
     leaf_store: &StoreReader,
 ) -> Option<Arc<LeafNode>> {
     let leaf_pn = partial_lookup(key, bbn_index)?;
+    fetch_leaf_blocking(&leaf_cache, leaf_store, leaf_pn)
+}
+
+pub(super) fn fetch_leaf_blocking(
+    leaf_cache: &LeafCache,
+    leaf_store: &StoreReader,
+    leaf_pn: PageNumber,
+) -> Option<Arc<LeafNode>> {
     match leaf_cache.get(leaf_pn) {
         Some(leaf) => Some(leaf),
         None => {
