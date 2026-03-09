@@ -386,15 +386,17 @@ impl LiveOverlay {
 
         let mut start_from_valid = prev_prev_key != &fallback_start;
         loop {
-            match self.get_strictly_next_key(prev_prev_key)? {
-                next_key if next_key >= prev_key && start_from_valid => {
+            match self.get_strictly_next_key(prev_prev_key) {
+                Some(next_key) if next_key >= prev_key && start_from_valid => {
                     break Some(prev_prev_key.clone())
                 }
-                next_key if next_key >= prev_key => break None,
-                next_key => {
+                Some(next_key) if next_key >= prev_key => break None,
+                Some(next_key) => {
                     prev_prev_key = next_key;
                     start_from_valid = true;
                 }
+                None if start_from_valid => break Some(prev_prev_key.clone()),
+                None => break None,
             }
         }
     }

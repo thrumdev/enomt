@@ -251,22 +251,25 @@ impl Tree {
                     collision_base.get_or_insert(next_key);
                     collisions += 1;
                 }
-                Some((next_key, _val)) if collisions > 1 && maybe_value.is_none() => {
+                Some((next_key, _val)) if collisions >= 1 && maybe_value.is_none() => {
                     // If collisions has been found but with no item that matches
                     // then the first collision element will be the right neighbor.
 
                     // UNWRAP: If collision was greater than 1 then the collision_base_len must be Some.
                     let right_neighbor = collision_base.take().unwrap();
 
-                    // Additional info are the neighbor of the collisions and
-                    // the collision group associated to the right neighbor or the key.
-                    pending_additional_info = Some((
-                        next_key,
-                        CollisionInfo {
+                    let collision_info = if collisions == 1 {
+                        None
+                    } else {
+                        Some(CollisionInfo {
                             base_key_len: right_neighbor.len(),
                             amount: collisions,
-                        },
-                    ));
+                        })
+                    };
+
+                    // Additional info are the neighbor of the collisions and
+                    // the collision group associated to the right neighbor or the key.
+                    pending_additional_info = Some((next_key, collision_info));
 
                     break Some(right_neighbor);
                 }
@@ -326,7 +329,7 @@ impl Tree {
             estimation_info
                 .additional_neighbor
                 .replace(additional_neighbor);
-            estimation_info.additional_collision.replace(collision_info);
+            estimation_info.additional_collision = collision_info;
             return (maybe_value, estimation_info);
         }
 

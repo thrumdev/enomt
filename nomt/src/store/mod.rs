@@ -13,7 +13,7 @@ use crate::{
 };
 use flock::Flock;
 use meta::Meta;
-use nomt_core::{page_id::PageId, trie::KeyPath};
+use nomt_core::{page_id::PageId, trie::KeyPath, witness::EstimationInfo};
 use parking_lot::Mutex;
 use std::{
     fs::{File, OpenOptions},
@@ -230,8 +230,11 @@ impl Store {
         key: KeyPath,
         overlay: &crate::LiveOverlay,
         io_pool: &IoPool,
-    ) -> anyhow::Result<()> {
-        todo!()
+    ) -> anyhow::Result<(Option<Vec<u8>>, EstimationInfo)> {
+        Ok(self
+            .shared
+            .values
+            .lookup_with_estimation_info(key, overlay, io_pool))
     }
 
     /// Loads the value hash stored under the given key.

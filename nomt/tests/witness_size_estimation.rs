@@ -1,6 +1,6 @@
 mod common;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use common::Test;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
@@ -43,16 +43,15 @@ impl Arbitrary for Value {
 
 #[derive(Clone, Debug)]
 struct Inputs {
-    // Insertions, modifications/deletions, re-insertions
+    // Reads, Writes, modifications/deletions, re-insertions
     key_value_pairs: Vec<(
+        BTreeSet<(u16, bool)>,
         BTreeMap<Key, Value>,
         BTreeMap<u16, Option<Value>>,
         BTreeMap<u16, Value>,
     )>,
     // Lentgh of the chain of overlays.
     n_overlays: u8,
-    // Iteration ranges.
-    iter_keys_info: Vec<(u16, u16)>,
 }
 
 impl Arbitrary for Inputs {
@@ -60,7 +59,6 @@ impl Arbitrary for Inputs {
         Self {
             key_value_pairs: Vec::arbitrary(g),
             n_overlays: u8::arbitrary(g),
-            iter_keys_info: Vec::arbitrary(g),
         }
     }
 }
@@ -70,22 +68,46 @@ fn rescale(init: u16, lower_bound: usize, upper_bound: usize) -> usize {
         + lower_bound
 }
 
-fn inner_nomt_iterator(
+fn inner_witness_size_estimation(
     Inputs {
         key_value_pairs,
         n_overlays,
-        iter_keys_info,
     }: Inputs,
 ) -> TestResult {
     // Fill nomt
-    let mut t = Test::new("nomt_iterator");
+
+    let mut t = Test::new_with_params(
+        "witness_size_estimation",
+        nomt::WitnessMode::read_write_with_estimation(),
+        1,      // commit concurrency
+        10_000, // hashtable buckets
+        None,   // panic on sync
+        true,   // cleanup dir
+    );
 
     let mut present_items: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut deleted_items: Vec<Vec<u8>> = Vec::new();
     let mut overlays = VecDeque::new();
 
-    for (insertions, modifications, re_insertions) in key_value_pairs {
-        for (Key { inner: key }, Value { inner: value }) in insertions {
+    let mut i = 0;
+    let tot_key_value_pairs = key_value_pairs.len();
+    for (reads, writes, modifications, re_insertions) in key_value_pairs {
+        for (key, is_present) in reads {
+            if present_items.is_empty() {
+                break;
+            }
+
+            let key_index = rescale(key, 0, present_items.len());
+
+            let mut key = present_items[key_index].0.clone();
+            if !is_present {
+                key.push(1);
+            };
+
+            let _ = t.read(key);
+        }
+
+        for (Key { inner: key }, Value { inner: value }) in writes {
             // Skip items that were already present or already deleted because could be re-inserted.
             if present_items.binary_search_by(|(k, _)| k.cmp(&key)).is_ok()
                 || deleted_items.binary_search(&key).is_ok()
@@ -93,6 +115,7 @@ fn inner_nomt_iterator(
                 continue;
             }
 
+            t.hint_write(key.clone());
             t.write(key.clone(), Some(value.clone()));
             present_items.push((key, value));
             present_items.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
@@ -119,6 +142,7 @@ fn inner_nomt_iterator(
                 key
             };
 
+            t.hint_write(key.clone());
             t.write(key, maybe_val.map(|v| v.inner));
         }
 
@@ -128,6 +152,7 @@ fn inner_nomt_iterator(
             }
             let key_index = rescale(key, 0, deleted_items.len());
             let key = deleted_items.remove(key_index);
+            t.hint_write(key.clone());
             t.write(key.clone(), Some(val.inner.clone()));
             present_items.push((key, val.inner.clone()));
             present_items.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
@@ -138,43 +163,89 @@ fn inner_nomt_iterator(
             deleted_items.sort_unstable();
         }
 
-        overlays.push_front(t.update().0);
+        let witness_size_estimation = t.estimate_witness_size().unwrap();
+
+        let (overlay, witness) = t.update();
+
+        let mut path_proofs: Vec<_> = witness
+            .path_proofs
+            .into_iter()
+            .map(|nomt_core::witness::WitnessedPath { inner, .. }| inner)
+            .collect();
+        path_proofs.sort_by(|p1, p2| p1.terminal.path().cmp(p2.terminal.path()));
+
+        let multi_proof = nomt_core::proof::MultiProof::from_path_proofs(path_proofs);
+
+        let mut tot_sibling_counter = 0;
+        let mut unique_siblings_counter = 0;
+        let mut terminators = 0;
+        let mut terminators_chunk_counter = 0;
+
+        for chunk in multi_proof.sibling_chunks.iter() {
+            match &chunk {
+                nomt::proof::SiblingChunk::Sibling(_) => {
+                    tot_sibling_counter += 1;
+                    unique_siblings_counter += 1;
+                }
+                nomt::proof::SiblingChunk::Terminators(t) => {
+                    terminators += t;
+                    tot_sibling_counter += t;
+                    terminators_chunk_counter += 1;
+                }
+            }
+        }
+
+        // println!("Real Witnessed paths");
+        // for witnesed_path in &multi_proof.paths {
+        //     println!("Witnessed path: {:?}", witnesed_path.terminal.path());
+        // }
+
+        // use codec::Encode;
+        use codec::Encode;
+        let sibling_chunks_encoding = multi_proof.sibling_chunks.encode().len();
+        let paths_encoding = multi_proof.paths.encode().len();
+        let witness_size = multi_proof.encode().len();
+
+        println!("real wittness data:");
+        println!("paths: {}", multi_proof.paths.len());
+        println!("tot_sibling_counter: {tot_sibling_counter}");
+        println!("unique_siblings_counter: {unique_siblings_counter}");
+        println!("terminators: {terminators}");
+        println!("terminators_chunk_counter : {terminators_chunk_counter }");
+        println!("sibling_chunks_encoding: {sibling_chunks_encoding}");
+        println!("paths_encoding: {paths_encoding}");
+        println!("witness_size: {witness_size}");
+        println!("");
+
+        assert!(witness_size <= witness_size_estimation);
+
+        overlays.push_front(overlay);
 
         if overlays.len() > n_overlays as usize {
             let overlay = overlays.pop_back().unwrap();
             t.commit_overlay(overlay);
         }
 
-        t.start_overlay_session(overlays.iter(), nomt::WitnessMode::read_write());
+        t.start_overlay_session(
+            overlays.iter(),
+            nomt::WitnessMode::read_write_with_estimation(),
+        );
+
+        i += 1;
+        println!("completed a {i} of {}", tot_key_value_pairs);
     }
 
     if present_items.is_empty() {
         return TestResult::discard();
     }
 
-    // Test beatree with overlay iteration.
-    for key_range_info in iter_keys_info {
-        let start_idx = rescale(key_range_info.0, 0, present_items.len());
-        let end_idx = rescale(key_range_info.1, start_idx, present_items.len());
-        let start_key = present_items[start_idx].0.clone();
-        let end_key = present_items[end_idx].0.clone();
-
-        let expected_iter = &present_items[start_idx..end_idx];
-
-        let nomt_iter = t.iterator(start_key, Some(end_key));
-
-        for (expected_pair, nomt_pair) in expected_iter.iter().zip(nomt_iter) {
-            assert_eq!(expected_pair, &nomt_pair);
-        }
-    }
-
     TestResult::passed()
 }
 
 #[test]
-fn nomt_iterator() {
+fn witness_size_estimation() {
     QuickCheck::new()
-        .gen(quickcheck::Gen::new(100))
-        .max_tests(5)
-        .quickcheck(inner_nomt_iterator as fn(_) -> TestResult)
+        .gen(quickcheck::Gen::new(300))
+        .max_tests(1)
+        .quickcheck(inner_witness_size_estimation as fn(_) -> TestResult)
 }

@@ -5,10 +5,7 @@
 use crate::{
     collisions::{self, build_collision_subtries, collides},
     hasher::NodeHasher,
-    proof::{
-        path_proof::{hash_path, shared_bits},
-        KeyOutOfScope, PathProof, PathProofTerminal,
-    },
+    proof::{path_proof::hash_path, shared_bits, KeyOutOfScope, PathProof, PathProofTerminal},
     trie::{InternalData, KeyPath, Node, NodeKind, ValueHash, TERMINATOR},
     trie_pos::TriePosition,
 };
