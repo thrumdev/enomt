@@ -2,6 +2,7 @@
 
 use crate::collisions::{self, build_collision_subtries, collides};
 use crate::hasher::NodeHasher;
+use crate::proof::shared_bits;
 use crate::trie::{self, InternalData, KeyPath, LeafData, Node, NodeKind, ValueHash, TERMINATOR};
 use crate::trie_pos::TriePosition;
 
@@ -630,24 +631,4 @@ pub fn verify_update<H: NodeHasher>(
     // UNWRAP: If `paths` is not empty this can never be `None` since `pending_siblings` is
     // unconditionally appended to.
     Ok(pending_siblings.pop().map(|n| n.0).unwrap())
-}
-
-pub fn shared_bits(k1: &BitSlice<u8, Msb0>, k2: &BitSlice<u8, Msb0>) -> usize {
-    let (k_min, k_max) = if k1.len() < k2.len() {
-        (k1, k2)
-    } else {
-        (k2, k1)
-    };
-
-    let mut shared_bits = k_min
-        .iter()
-        .zip(k_max.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    if shared_bits == k_min.len() {
-        // count the possibly shared padded zeros
-        shared_bits += k_max[shared_bits..].leading_zeros()
-    }
-    shared_bits
 }
