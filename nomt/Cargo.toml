@@ -50,7 +50,7 @@ hex.workspace = true
 quickcheck.workspace = true
 blake3.workspace = true
 codec = { workspace = true, optional = false }
-nomt-core = { path = "../core", features = ["codec"] }
+nomt-core = { path = "../core", features = ["codec", "witness-estimation-testing"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

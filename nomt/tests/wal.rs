@@ -8,6 +8,7 @@ fn wal_recovery_test_post_meta_swap() {
     // Initialize the db with panic on sync equals true.
     let mut t = Test::new_with_params(
         "wal_add_remove_1000",
+        nomt::WitnessMode::Enabled,
         1,                               // commit_concurrency,
         1000000,                         // hashtable_buckets,
         Some(PanicOnSyncMode::PostMeta), // panic_on_sync
@@ -27,6 +28,7 @@ fn wal_recovery_test_post_meta_swap() {
     // Re-open the db without cleaning the DB dir and without panic on sync.
     let mut t = Test::new_with_params(
         "wal_add_remove_1000",
+        nomt::WitnessMode::Enabled,
         1,       // commit_concurrency,
         1000000, // hashtable_buckets,
         None,    // panic_on_sync
@@ -42,6 +44,7 @@ fn wal_recovery_test_pre_meta_swap() {
     // Initialize the db with panic on sync equals true.
     let mut t = Test::new_with_params(
         "wal_pre_meta_swap",
+        nomt::WitnessMode::Enabled,
         1,                              // commit_concurrency,
         1000000,                        // hashtable_buckets,
         Some(PanicOnSyncMode::PostWal), // panic_on_sync
@@ -61,6 +64,7 @@ fn wal_recovery_test_pre_meta_swap() {
     // Re-open the db without cleaning the DB dir and without panic on sync.
     let mut t = Test::new_with_params(
         "wal_pre_meta_swap",
+        nomt::WitnessMode::Enabled,
         1,       // commit_concurrency,
         1000000, // hashtable_buckets,
         None,    // panic_on_sync

@@ -19,23 +19,23 @@ fn overlay_multiple_forks() {
 
     let overlay_a = test.update().0;
     let overlay_b1 = {
-        test.start_overlay_session([&overlay_a]);
+        test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
         test.write(vec![1; 32], Some(vec![1, 2, 3]));
         test.update().0
     };
     let overlay_b2 = {
-        test.start_overlay_session([&overlay_a]);
+        test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
         test.write(vec![1; 32], Some(vec![4, 5, 6]));
         test.update().0
     };
 
     {
-        test.start_overlay_session([&overlay_b1, &overlay_a]);
+        test.start_overlay_session([&overlay_b1, &overlay_a], nomt::WitnessMode::read_write());
         assert_eq!(test.read(vec![1; 32]), Some(vec![1, 2, 3]));
     }
 
     {
-        test.start_overlay_session([&overlay_b2, &overlay_a]);
+        test.start_overlay_session([&overlay_b2, &overlay_a], nomt::WitnessMode::read_write());
         assert_eq!(test.read(vec![1; 32]), Some(vec![4, 5, 6]));
     }
 }
@@ -51,7 +51,7 @@ fn overlay_root_calculation() {
         expected_root(vec![(vec![1; 32], vec![1, 2, 3])]),
     );
 
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     test.write(vec![2; 32], Some(vec![4, 5, 6]));
     let overlay_b = test.update().0;
 
@@ -63,7 +63,7 @@ fn overlay_root_calculation() {
         ]),
     );
 
-    test.start_overlay_session([&overlay_b, &overlay_a]);
+    test.start_overlay_session([&overlay_b, &overlay_a], nomt::WitnessMode::read_write());
     test.write(vec![1; 32], Some(vec![7, 8, 9]));
     test.write(vec![3; 32], Some(vec![0, 1, 0]));
     let overlay_c = test.update().0;
@@ -83,7 +83,7 @@ fn overlay_root_calculation() {
 fn overlays_must_be_committed_in_order() {
     let mut test = Test::new("overlays_committed_in_order");
     let overlay_a = test.update().0;
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     let overlay_b = test.update().0;
 
     test.commit_overlay(overlay_b);
@@ -94,9 +94,9 @@ fn overlays_must_be_committed_in_order() {
 fn overlay_competing_committed() {
     let mut test = Test::new("overlays_competing_committed");
     let overlay_a = test.update().0;
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     let overlay_b1 = test.update().0;
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     let overlay_b2 = test.update().0;
 
     test.commit_overlay(overlay_a);
@@ -109,7 +109,7 @@ fn overlay_competing_committed() {
 fn overlay_commit_in_order_works() {
     let mut test = Test::new("overlays_commit_in_order_works");
     let overlay_a = test.update().0;
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     let overlay_b = test.update().0;
 
     test.commit_overlay(overlay_a);
@@ -130,6 +130,7 @@ fn overlay_changes_land_on_disk_when_committed() {
 
     let mut test = Test::new_with_params(
         "overlay_changes_land_on_disk",
+        nomt::WitnessMode::Enabled,
         /* commit_concurrency */ 1,
         /* hashtable_buckets */ 1,
         /* panic_on_sync */ None,
@@ -154,6 +155,7 @@ fn overlay_uncommitted_not_on_disk() {
 
     let mut test = Test::new_with_params(
         "overlay_uncommitted_not_on_disk",
+        nomt::WitnessMode::Enabled,
         /* commit_concurrency */ 1,
         /* hashtable_buckets */ 1,
         /* panic_on_sync */ None,
@@ -196,7 +198,7 @@ fn overlay_deletions() {
     test.write(vec![128; 32], None);
     let overlay_a = test.update().0;
 
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     assert_eq!(test.read(vec![0; 32]), None);
     assert_eq!(test.read(vec![1; 32]), Some(vec![2, 2]));
 
@@ -219,7 +221,7 @@ fn overlay_deletions() {
     test.write(vec![129; 32], None);
     let overlay_a = test.update().0;
 
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     assert_eq!(test.read(vec![0; 32]), Some(vec![1, 1]));
     assert_eq!(test.read(vec![1; 32]), None);
 
@@ -244,7 +246,7 @@ fn overlay_deletions() {
     test.write(vec![131; 32], None);
     let overlay_a = test.update().0;
 
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     assert_eq!(test.read(vec![32; 32]), None);
     assert_eq!(test.read(vec![33; 32]), None);
     assert_eq!(test.read(vec![34; 32]), Some(vec![3, 3]));
@@ -287,14 +289,14 @@ fn overlay_deletions_respected_in_seek() {
     let _ = test.commit();
 
     // first overlay: delete key_a. [0, 0, 1] is now a leaf for key_b
-    test.start_overlay_session(None);
+    test.start_overlay_session(None, nomt::WitnessMode::read_write());
     test.write(key_a, None);
     let overlay_a = test.update().0;
 
     // second overlay: update key_b's value.
     // the b-tree iterator contains key_a (deleted in overlay) and key_b,
     // so seek must skip over key_a.
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     test.write(key_b.clone(), Some(vec![22]));
     let overlay_b = test.update().0;
 
@@ -330,13 +332,13 @@ fn overlay_earlier_deletions_respected_in_seek() {
 
     // First overlay: introduce key_a and delete key_b. [0, 0, 1] is
     // now internal with children for key_a and key_c
-    test.start_overlay_session(None);
+    test.start_overlay_session(None, nomt::WitnessMode::read_write());
     test.write(key_a.clone(), Some(vec![24]));
     test.write(key_b.clone(), None);
     let overlay_a = test.update().0;
 
     // Second overlay: delete key_a. [0, 0, 1] is now a leaf for key_c
-    test.start_overlay_session([&overlay_a]);
+    test.start_overlay_session([&overlay_a], nomt::WitnessMode::read_write());
     test.write(key_a.clone(), None);
     let overlay_b = test.update().0;
 
@@ -349,7 +351,7 @@ fn overlay_earlier_deletions_respected_in_seek() {
     //   4. ignore the deleted key_a and continue to next deletion, key_b.
     //   5. find that key_b is deleted, continue to next item.
     //   6. get next item from btree: key_c == key_c, and return it as the leaf.
-    test.start_overlay_session([&overlay_b, &overlay_a]);
+    test.start_overlay_session([&overlay_b, &overlay_a], nomt::WitnessMode::read_write());
     test.write(key_c.clone(), Some(vec![22]));
     let overlay_c = test.update().0;
 

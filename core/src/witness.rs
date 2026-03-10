@@ -1,15 +1,18 @@
 //! Witnesses of NOMT sessions. These types encapsulate entire sets of reads and writes.
 
 use crate::{
-    collisions::collides,
-    proof::{shared_bits, PathProof},
+    proof::PathProof,
     trie::{KeyPath, ValueHash},
     trie_pos::TriePosition,
 };
 
+#[cfg(feature = "codec")]
+use crate::{collisions::collides, proof::shared_bits};
+#[cfg(feature = "codec")]
+use bitvec::{order::Msb0, view::BitView};
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
-use bitvec::{order::Msb0, view::BitView};
 
 /// A witness that can be used to prove the correctness of state trie retrievals and updates.
 ///
@@ -578,7 +581,6 @@ impl WitnessSizeEstimator {
 //     if terminal.depth <= 1 || shared_bits >= terminal.depth - 2 {
 //         return (0, 0);
 //     }
-
 //     let count = |bits_iter| {
 //         let mut terminators = 0;
 //         let mut sequences = 0;

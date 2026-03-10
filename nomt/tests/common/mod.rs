@@ -57,11 +57,12 @@ pub struct Test {
 #[allow(dead_code)]
 impl Test {
     pub fn new(name: impl AsRef<Path>) -> Self {
-        Self::new_with_params(name, 1, 64_000, None, true)
+        Self::new_with_params(name, WitnessMode::Enabled, 1, 64_000, None, true)
     }
 
     pub fn new_with_params(
         name: impl AsRef<Path>,
+        witness_mode: WitnessMode,
         commit_concurrency: usize,
         hashtable_buckets: u32,
         panic_on_sync: Option<PanicOnSyncMode>,
@@ -83,8 +84,7 @@ impl Test {
         o.hashtable_buckets(hashtable_buckets);
         o.commit_concurrency(commit_concurrency);
         let nomt = Nomt::open(o).unwrap();
-        let session =
-            nomt.begin_session(SessionParams::default().witness_mode(WitnessMode::read_write()));
+        let session = nomt.begin_session(SessionParams::default().witness_mode(witness_mode));
         Self {
             nomt,
             session: Some(session),
@@ -118,11 +118,18 @@ impl Test {
             Entry::Vacant(v) => {
                 let session = self.session.as_mut().unwrap();
                 let value = session.read(key.clone()).unwrap();
-                session.warm_up(key);
                 v.insert(KeyReadWrite::Read(value.clone()));
                 value
             }
         }
+    }
+
+    #[cfg(feature = "codec")]
+    pub fn estimate_witness_size(&self) -> Option<nomt_core::witness::EstimationResult> {
+        self.session
+            .as_ref()
+            .map(|session| session.estimate_witness_size())
+            .flatten()
     }
 
     pub fn iterator<'a>(
@@ -174,12 +181,16 @@ impl Test {
         );
     }
 
-    pub fn start_overlay_session<'a>(&mut self, ancestors: impl IntoIterator<Item = &'a Overlay>) {
+    pub fn start_overlay_session<'a>(
+        &mut self,
+        ancestors: impl IntoIterator<Item = &'a Overlay>,
+        witness_mode: WitnessMode,
+    ) {
         // force drop of live session before creating a new one.
         self.access.clear();
         self.session = None;
         let params = SessionParams::default()
-            .witness_mode(WitnessMode::read_write())
+            .witness_mode(witness_mode)
             .overlay(ancestors)
             .unwrap();
         self.session = Some(self.nomt.begin_session(params));

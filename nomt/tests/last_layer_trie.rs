@@ -7,10 +7,11 @@ use common::Test;
 fn last_layer_trie() {
     let mut t = Test::new_with_params(
         "last_layer_trie", // name
-        1,                 // commit_concurrency
-        10_000,            // hashtable_buckets
-        None,              // panic_on_sync
-        true,              // cleanup_dir
+        nomt::WitnessMode::Enabled,
+        1,      // commit_concurrency
+        10_000, // hashtable_buckets
+        None,   // panic_on_sync
+        true,   // cleanup_dir
     );
 
     let key1 = vec![170; 32];
