@@ -20,6 +20,7 @@ pub mod iterator;
 
 mod allocator;
 mod branch;
+#[cfg(feature = "codec")]
 mod estimation;
 mod index;
 mod leaf;
