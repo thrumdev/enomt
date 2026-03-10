@@ -49,6 +49,8 @@ lazy_static.workspace = true
 hex.workspace = true
 quickcheck.workspace = true
 blake3.workspace = true
+codec = { workspace = true, optional = false }
+nomt-core = { path = "../core", features = ["codec"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

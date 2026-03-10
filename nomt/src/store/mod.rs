@@ -13,6 +13,8 @@ use crate::{
 };
 use flock::Flock;
 use meta::Meta;
+#[cfg(feature = "codec")]
+use nomt_core::witness::EstimationInfo;
 use nomt_core::{page_id::PageId, trie::KeyPath};
 use parking_lot::Mutex;
 use std::{
@@ -223,15 +225,18 @@ impl Store {
         Ok(self.shared.values.lookup(key))
     }
 
-    /// Loads the flat value stored under the given key, along side with
-    /// its neighbors within the merkle trie.
+    /// Loads the flat value stored under the given key, alongside with
+    /// its information required for Witness size estimation.
+    #[cfg(feature = "codec")]
     pub fn load_value_with_estimation_info(
         &self,
         key: KeyPath,
         overlay: &crate::LiveOverlay,
         io_pool: &IoPool,
-    ) -> anyhow::Result<()> {
-        todo!()
+    ) -> (Option<Vec<u8>>, EstimationInfo) {
+        self.shared
+            .values
+            .lookup_with_estimation_info(key, overlay, io_pool)
     }
 
     /// Loads the value hash stored under the given key.

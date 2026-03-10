@@ -20,6 +20,9 @@ use page_cache::PageCache;
 use parking_lot::{ArcRwLockReadGuard, Mutex, RwLock};
 use store::{Store, ValueTransaction};
 
+#[cfg(feature = "codec")]
+use nomt_core::witness::WitnessSizeEstimator;
+
 pub use io::IoUringPermission;
 pub use nomt_core::hasher;
 pub use nomt_core::proof;
@@ -403,17 +406,43 @@ impl<T: HashAlgorithm> Nomt<T> {
 }
 
 /// A configuration type used to inform NOMT whether to generate witnesses of accessed data.
-pub struct WitnessMode(bool);
+pub enum WitnessMode {
+    /// Generate a Witness for all reads and writes.
+    Enabled,
+    /// Generate a Witness and allow for an on-the-fly estimation
+    /// of the final encoded Witness size.
+    #[cfg(feature = "codec")]
+    EnabledWithEstimation(Arc<RwLock<WitnessSizeEstimator>>),
+    /// Do not generate a Witness for any reads or writes.
+    Disabled,
+}
 
 impl WitnessMode {
     /// Witness all reads and writes to the trie.
     pub fn read_write() -> Self {
-        WitnessMode(true)
+        WitnessMode::Enabled
+    }
+
+    /// Witness all reads and writes to the trie allowing an estimation
+    /// of the final witness encoding.
+    #[cfg(feature = "codec")]
+    pub fn read_write_with_estimation() -> Self {
+        WitnessMode::EnabledWithEstimation(Arc::new(RwLock::new(WitnessSizeEstimator::new())))
     }
 
     /// Do not generate a witness.
     pub fn disabled() -> Self {
-        WitnessMode(false)
+        WitnessMode::Disabled
+    }
+
+    /// Whether the Witness creation is enabled or not.
+    fn is_enabled(&self) -> bool {
+        match self {
+            WitnessMode::Enabled => true,
+            WitnessMode::Disabled => false,
+            #[cfg(feature = "codec")]
+            WitnessMode::EnabledWithEstimation(..) => true,
+        }
     }
 }
 
@@ -502,7 +531,21 @@ impl<T> Session<T> {
     /// The purpose of warming up is to move I/O out of the critical path of committing a
     /// session to maximize throughput.
     /// There is no correctness issue with doing too many warm-ups, but there is a cost for I/O.
+    ///
+    /// NOTE: This is mandatory while Witness size estimation is active, if not used the estimation
+    /// will not count for writes and thus provide an under estimation of the final size.
     pub fn warm_up(&self, path: KeyPath) {
+        #[cfg(feature = "codec")]
+        if let WitnessMode::EnabledWithEstimation(estimator) = &self.witness_mode {
+            let mut estimator = estimator.write();
+            let (_, estimation_info) = self.store.load_value_with_estimation_info(
+                path.clone(),
+                &self.overlay,
+                self.store.io_pool(),
+            );
+            estimator.add_traversal(estimation_info);
+        }
+
         self.merkle_updater.warm_up(path);
     }
 
@@ -511,9 +554,23 @@ impl<T> Session<T> {
     /// Returns `None` if the value is not stored under the given key. Fails only if I/O fails.
     pub fn read(&self, path: KeyPath) -> anyhow::Result<Option<Value>> {
         let _maybe_guard = self.metrics.record(Metric::ValueFetchTime);
+
+        #[cfg(feature = "codec")]
+        if let WitnessMode::EnabledWithEstimation(estimator) = &self.witness_mode {
+            let mut estimator = estimator.write();
+            let (val, estimation_info) = self.store.load_value_with_estimation_info(
+                path,
+                &self.overlay,
+                self.store.io_pool(),
+            );
+            estimator.add_traversal(estimation_info);
+            return Ok(val);
+        }
+
         if let Some(value_change) = self.overlay.value(&path) {
             return Ok(value_change.as_option().map(|v| v.to_vec()));
         }
+
         self.store.load_value(path)
     }
 
@@ -527,6 +584,17 @@ impl<T> Session<T> {
             start,
             end,
         )
+    }
+
+    /// Returns an estimation of the Witness size.
+    /// It only works if the current Session was created with
+    /// [`WitnessMode::EnabledWithEstimation`]
+    #[cfg(feature = "codec")]
+    pub fn estimate_witness_size(&self) -> Option<usize> {
+        let WitnessMode::EnabledWithEstimation(estimator) = &self.witness_mode else {
+            return None;
+        };
+        Some(estimator.read().estimate())
     }
 
     /// Returns the [`Root`] at which this session is based off of.
@@ -615,7 +683,7 @@ impl<T: HashAlgorithm> Session<T> {
 
         let merkle_update_handle = self
             .merkle_updater
-            .update_and_prove::<T>(compact_actuals, self.witness_mode.0)?;
+            .update_and_prove::<T>(compact_actuals, self.witness_mode.is_enabled())?;
 
         let mut tx = self.store.new_value_tx();
         for (path, read_write) in actuals {
