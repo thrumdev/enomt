@@ -239,7 +239,7 @@ impl Tree {
             collisions > 0
         };
 
-        let mut collision_info = (collisions > 1).then(|| CollisionInfo {
+        let collision_info = (collisions > 1).then(|| CollisionInfo {
             base_key_len: collision_base.take().unwrap().len(),
             amount: collisions,
         });
@@ -285,9 +285,9 @@ impl Tree {
             }
             // If there is only the right neighbor then one additional right
             // neighbor is required.
-            (None, Some(right_neighbor)) => false,
+            (None, Some(_right_neighbor)) => false,
             // The same as above for the left neighbor.
-            (Some(left_neighbor), None) => true,
+            (Some(_left_neighbor), None) => true,
             // No neighbors and presence within the db implies that the db is empty.
             (None, None) => {
                 return (None, estimation_info);
@@ -337,7 +337,7 @@ impl Tree {
                     match &additional_neighbor {
                         None => break,
                         Some(k) if !collides(right_neighbor, &k) => break,
-                        Some(k) => (),
+                        Some(_) => (),
                     }
                     amount += 1;
                 }

@@ -31,6 +31,7 @@ fn fill_and_empty(seed: [u8; 16], commit_concurrency: usize) {
 
     let mut t = Test::new_with_params(
         format!("fill_and_empty_{}", commit_concurrency), // name
+        nomt::WitnessMode::Enabled,
         commit_concurrency,
         15000, // hashtable_buckets
         None,  // panic_on_sync

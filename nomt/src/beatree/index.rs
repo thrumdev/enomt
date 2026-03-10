@@ -44,6 +44,7 @@ impl Index {
     }
 
     /// Get a reference to the inner map.
+    #[cfg(feature = "codec")]
     pub(super) fn inner(&self) -> &OrdMap<Key, Arc<BranchNode>> {
         &self.first_key_map
     }

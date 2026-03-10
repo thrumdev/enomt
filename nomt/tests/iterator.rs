@@ -49,7 +49,7 @@ struct Inputs {
         BTreeMap<u16, Option<Value>>,
         BTreeMap<u16, Value>,
     )>,
-    // Lentgh of the chain of overlays.
+    // Length of the chain of overlays.
     n_overlays: u8,
     // Iteration ranges.
     iter_keys_info: Vec<(u16, u16)>,
@@ -145,7 +145,7 @@ fn inner_nomt_iterator(
             t.commit_overlay(overlay);
         }
 
-        t.start_overlay_session(overlays.iter());
+        t.start_overlay_session(overlays.iter(), nomt::WitnessMode::read_write());
     }
 
     if present_items.is_empty() {

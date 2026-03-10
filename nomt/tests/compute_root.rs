@@ -21,7 +21,14 @@ fn root_on_leaf() {
         t.commit();
     }
 
-    let t = Test::new_with_params("compute_root_leaf", 1, 1, None, false);
+    let t = Test::new_with_params(
+        "compute_root_leaf",
+        nomt::WitnessMode::Enabled,
+        1,
+        1,
+        None,
+        false,
+    );
     let root = t.root();
     assert_eq!(
         NodeKind::of::<Blake3Hasher>(&root.into_inner()),
@@ -38,7 +45,14 @@ fn root_on_internal() {
         t.commit();
     }
 
-    let t = Test::new_with_params("compute_root_internal", 1, 1, None, false);
+    let t = Test::new_with_params(
+        "compute_root_internal",
+        nomt::WitnessMode::Enabled,
+        1,
+        1,
+        None,
+        false,
+    );
     let root = t.root();
     assert_eq!(
         NodeKind::of::<Blake3Hasher>(&root.into_inner()),
@@ -62,7 +76,14 @@ fn root_on_collision_leaf() {
         t.commit();
     }
 
-    let t = Test::new_with_params("compute_root_collision_leaf", 1, 1, None, false);
+    let t = Test::new_with_params(
+        "compute_root_collision_leaf",
+        nomt::WitnessMode::Enabled,
+        1,
+        1,
+        None,
+        false,
+    );
     let root = t.root();
     assert_eq!(
         NodeKind::of::<Blake3Hasher>(&root.into_inner()),

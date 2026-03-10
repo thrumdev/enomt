@@ -106,6 +106,7 @@ fn split_jump_on_the_right() {
 fn split_jump_left_and_bottom() {
     let mut t = Test::new_with_params(
         "split_jump_left_and_bottom",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync
@@ -150,6 +151,7 @@ fn split_jump_left_and_bottom() {
 fn split_jump_left_bottom_right_second_half() {
     let mut t = Test::new_with_params(
         "split_jump_left_bottom_right_second_half",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync
@@ -200,6 +202,7 @@ fn split_jump_left_bottom_right_second_half() {
 fn split_jump_left_bottom_right_first_half() {
     let mut t = Test::new_with_params(
         "split_jump_left_bottom_right",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync
@@ -250,6 +253,7 @@ fn split_jump_left_bottom_right_first_half() {
 fn split_jump_twice_on_the_left() {
     let mut t = Test::new_with_params(
         "split_jump_twice_on_the_left",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync
@@ -303,6 +307,7 @@ fn split_jump_twice_on_the_left() {
 fn split_jump_twice_on_the_right() {
     let mut t = Test::new_with_params(
         "split_jump_twice_on_the_right",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync
@@ -348,6 +353,7 @@ fn split_jump_twice_on_the_right() {
 fn making_jump_longer() {
     let mut t = Test::new_with_params(
         "making_jump_longer",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync

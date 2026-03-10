@@ -354,6 +354,7 @@ impl LiveOverlay {
     /// Get the closest smaller key in a map to a given key.
     ///
     /// Returns `None` if there are no smaller keys.
+    #[cfg(feature = "codec")]
     pub(super) fn get_strict_prev(&self, key: &KeyPath) -> Option<KeyPath> {
         let parent = self.parent.as_ref()?;
         let mut prev_key_iter = parent.index.values.range(..key.clone());

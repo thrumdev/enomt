@@ -58,7 +58,7 @@ fn prove_in_session_against_overlay() {
     }
     let (overlay_a, _) = t.update();
     let root = overlay_a.root().into_inner();
-    t.start_overlay_session(&[overlay_a]);
+    t.start_overlay_session(&[overlay_a], nomt::WitnessMode::read_write());
 
     for i in 0..100 {
         let k = common::account_path(i);
@@ -110,6 +110,7 @@ fn prove_in_session_no_cache() {
     // Reopen the DB to clear the cache.
     let t = Test::new_with_params(
         "prove_in_session_no_cache",
+        nomt::WitnessMode::Enabled,
         1,      // commit concurrency
         10_000, // hashtable buckets
         None,   // panic on sync

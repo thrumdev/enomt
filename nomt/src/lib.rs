@@ -590,7 +590,7 @@ impl<T> Session<T> {
     /// It only works if the current Session was created with
     /// [`WitnessMode::EnabledWithEstimation`]
     #[cfg(feature = "codec")]
-    pub fn estimate_witness_size(&self) -> Option<usize> {
+    pub fn estimate_witness_size(&self) -> Option<nomt_core::witness::EstimationResult> {
         let WitnessMode::EnabledWithEstimation(estimator) = &self.witness_mode else {
             return None;
         };
