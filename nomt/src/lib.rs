@@ -576,7 +576,7 @@ impl<T> Session<T> {
 
     /// Synchronously iterate over all key-value pairs from the specified start key
     /// up to the specified end key, if provided.
-    pub fn iterator<'a>(&'a mut self, start: KeyPath, end: Option<KeyPath>) -> NomtIterator {
+    pub fn iterator(&self, start: KeyPath, end: Option<KeyPath>) -> NomtIterator {
         NomtIterator::new(
             self.store.io_pool(),
             self.store.read_transaction(),

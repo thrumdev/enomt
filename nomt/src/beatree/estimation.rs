@@ -402,12 +402,11 @@ mod tests {
     use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
     use std::{collections::BTreeMap, sync::Arc};
 
-    lazy_static! {
-        static ref PAGE_POOL: PagePool = PagePool::new();
-        static ref IO_POOL: IoPool = start_test_io_pool(3, PAGE_POOL.clone());
-    }
-
-    fn init_beatree(key_value_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Tree {
+    fn init_beatree(
+        key_value_pairs: Vec<(Vec<u8>, Vec<u8>)>,
+        page_pool: &PagePool,
+        io_pool: &IoPool,
+    ) -> Tree {
         let ln_fd = tempfile::tempfile().unwrap();
         let bbn_fd = tempfile::tempfile().unwrap();
         ln_fd.set_len(BRANCH_NODE_SIZE as u64).unwrap();
@@ -417,8 +416,8 @@ mod tests {
         let bbn_fd = Arc::new(bbn_fd);
 
         let tree = Tree::open(
-            PAGE_POOL.clone(),
-            &IO_POOL,
+            page_pool.clone(),
+            &io_pool,
             0, /* empty free list */
             0, /* empty free list */
             1, /* first ln pn */
@@ -559,11 +558,13 @@ mod tests {
             .map(|(idx, is_present)| (rescale(idx, 0, key_value_pairs.len()), is_present))
             .collect();
 
-        let tree = init_beatree(key_value_pairs.clone());
+        let page_pool: PagePool = PagePool::new();
+        let io_pool: IoPool = start_test_io_pool(3, page_pool.clone());
+        let tree = init_beatree(key_value_pairs.clone(), &page_pool, &io_pool);
 
         // NOTE: ensure the db was properly filled:
         {
-            let mut iter = tree.read_transaction().iterator(&IO_POOL, vec![0], None);
+            let mut iter = tree.read_transaction().iterator(&io_pool, vec![0], None);
             for (key, val) in key_value_pairs.iter().by_ref() {
                 let (btree_key, btree_val) = iter.next().unwrap();
                 assert_eq!(&btree_key, key);
@@ -579,7 +580,7 @@ mod tests {
                 let (val, estimation_info) = tree.lookup_with_estimation_info(
                     lookup_key.clone(),
                     &LiveOverlay::new([].iter()).unwrap(),
-                    &IO_POOL,
+                    &io_pool,
                 );
 
                 assert_eq!(val.as_ref(), Some(&values[lookup_index]));
@@ -656,38 +657,57 @@ mod tests {
                     key
                 };
 
-                let additional_neighbor = if left_neighbor.is_none() || right_neighbor.is_none() {
-                    None
-                } else {
-                    let k = lookup_key.view_bits::<Msb0>();
-                    // UNWRAPs: both neighbors have already been checked to be Some.
-                    let left_neighbor = left_neighbor.as_ref().unwrap();
-                    let l = left_neighbor.view_bits::<Msb0>();
-                    let r = right_neighbor.as_ref().unwrap().view_bits::<Msb0>();
-                    let additional_neighbor = if shared_bits(k, l) > shared_bits(k, r) {
-                        // keys.get(left_index - 1)
+                let additional_neighbor = match (left_neighbor, right_neighbor) {
+                    (None, None) => None,
+                    (Some(l), None) => {
                         // Additional is to the left of L, skip L's collision group.
                         let start = collisions
                             .iter()
                             .find(|range| range.contains(&left_index))
                             .map_or(left_index, |range| range.start);
-                        start.checked_sub(1).and_then(|idx| keys.get(idx))
-                    } else {
-                        // keys.get(right_index + 1)
+                        Some(start.checked_sub(1).and_then(|idx| keys.get(idx)).cloned())
+                    }
+                    (None, Some(r)) => {
                         // Additional is to the right of R, skip R's collision group.
                         let end = collisions
                             .iter()
                             .find(|range| range.contains(&right_index))
                             .map_or(right_index, |range| range.end - 1);
-                        keys.get(end + 1)
-                    };
-                    Some(additional_neighbor.cloned())
+                        Some(keys.get(end + 1).cloned())
+                    }
+                    (Some(l), Some(r)) => {
+                        let k = lookup_key.view_bits::<Msb0>();
+                        let l = l.view_bits::<Msb0>();
+                        let r = r.view_bits::<Msb0>();
+                        let additional_neighbor = if shared_bits(k, l) > shared_bits(k, r) {
+                            // keys.get(left_index - 1)
+                            // Additional is to the left of L, skip L's collision group.
+                            let start = collisions
+                                .iter()
+                                .find(|range| range.contains(&left_index))
+                                .map_or(left_index, |range| range.start);
+                            start.checked_sub(1).and_then(|idx| keys.get(idx))
+                        } else {
+                            // keys.get(right_index + 1)
+                            // Additional is to the right of R, skip R's collision group.
+                            let end = collisions
+                                .iter()
+                                .find(|range| range.contains(&right_index))
+                                .map_or(right_index, |range| range.end - 1);
+                            keys.get(end + 1)
+                        };
+                        Some(additional_neighbor.cloned())
+                    }
                 };
+
+                // let additional_neighbor = if left_neighbor.is_none() && right_neighbor.is_none() {
+                //     None
+                // } else ;
 
                 let (val, estimation_info) = tree.lookup_with_estimation_info(
                     lookup_key.clone(),
                     &LiveOverlay::new([].iter()).unwrap(),
-                    &IO_POOL,
+                    &io_pool,
                 );
 
                 assert_eq!(val.as_ref(), None);
@@ -749,8 +769,8 @@ mod tests {
     #[test]
     fn lookup_neighbors() {
         QuickCheck::new()
-            .gen(quickcheck::Gen::new(300))
-            .max_tests(1)
+            .gen(quickcheck::Gen::new(400))
+            .max_tests(10)
             .quickcheck(inner_lookup_neighbors as fn(_) -> TestResult)
     }
 }

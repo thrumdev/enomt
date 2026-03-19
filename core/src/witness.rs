@@ -12,7 +12,7 @@ use crate::{collisions::collides, proof::shared_bits};
 use bitvec::{order::Msb0, view::BitView};
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 /// A witness that can be used to prove the correctness of state trie retrievals and updates.
 ///
@@ -219,7 +219,7 @@ impl WitnessSizeEstimator {
             .binary_search_by(|terminal| {
                 // Make sure that colliding keys end up in the same terminal.
                 if collides(&terminal.key, &terminal_data.key) {
-                    std::cmp::Ordering::Equal
+                    core::cmp::Ordering::Equal
                 } else {
                     terminal.key.cmp(&terminal_data.key)
                 }
